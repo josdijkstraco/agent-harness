@@ -1,71 +1,79 @@
-"""Agent registry and routing graph — the single place to define agents and their connections."""
+#!/usr/bin/env python3
+"""Workflow pipeline executor — runs a command through a chain of agents."""
 
-from dataclasses import dataclass, field
+import argparse
+import sys
+from pathlib import Path
 
-from agent import agent_loop
-from agents import coordinator, implementer, planner, reviewer
-from tools import Tool
+import yaml
 
-OPUS = "claude-opus-4-20250514"
-SONNET = "claude-sonnet-4-6"
-HAIKU = "claude-haiku-4-5"
+from agent_openrouter import MODEL as DEFAULT_MODEL, agent_loop
+from tools import ALL_TOOLS
 
-
-@dataclass
-class AgentConfig:
-    system_prompt: str
-    tools: list[Tool]
-    model: str
-    delegates_to: list[str] = field(default_factory=list)
+_TOOL_MAP = {t.name: t for t in ALL_TOOLS}
 
 
-REGISTRY: dict[str, AgentConfig] = {
-    "coordinator": AgentConfig(coordinator.SYSTEM_PROMPT, coordinator.BASE_TOOLS, SONNET, ["planner", "implementer", "reviewer"]),
-    "planner":     AgentConfig(planner.SYSTEM_PROMPT,     planner.TOOLS,          SONNET),
-    "implementer": AgentConfig(implementer.SYSTEM_PROMPT, implementer.TOOLS,      SONNET),
-    "reviewer":    AgentConfig(reviewer.SYSTEM_PROMPT,    reviewer.TOOLS,         SONNET),
-}
+def load_workflow(name: str, workflows_dir: Path = Path("workflows")) -> list[str]:
+    """Scan workflows_dir for a YAML whose name: field matches name."""
+    for path in sorted(workflows_dir.glob("*.yaml")):
+        data = yaml.safe_load(path.read_text())
+        if data.get("name") == name:
+            return [step["name"] for step in data.get("steps", [])]
+    print(f"Error: no workflow named '{name}' found in {workflows_dir}/", file=sys.stderr)
+    sys.exit(1)
 
 
-def make_handoff(target_name: str) -> Tool:
-    """Build a handoff Tool that delegates to target_name with its own routing-aware tool set."""
-    def handler(params: dict) -> str:
-        config = REGISTRY[target_name]
-        tools = build_tools(target_name)  # lazy — called at invocation time
-        context = params.get("context", "")
-        user_message = f"{context}\n\n{params['task']}" if context else params["task"]
-        messages: list = []
-        agent_loop(user_message, messages, config.system_prompt, tools, label=target_name, model=config.model)
-        for block in reversed(messages[-1]["content"]):
-            if isinstance(block, dict) and block.get("type") == "text":
-                return block["text"]
-        return "(no output)"
+def load_agent(name: str, agents_dir: Path = Path("agents")) -> dict:
+    """Scan agents_dir for a YAML whose name: field matches name.
 
-    return Tool(
-        schema={
-            "name": f"delegate_to_{target_name}",
-            "description": f"Delegate a task to the {target_name} agent.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "task": {
-                        "type": "string",
-                        "description": "Instruction for the agent — what to do.",
-                    },
-                    "context": {
-                        "type": "string",
-                        "description": "Output from the previous agent to pass as input.",
-                    },
-                },
-                "required": ["task", "context"],
-            },
-        },
-        handler=handler,
-    )
+    Returns dict with keys: prompt, tools (list[Tool]), tool_names (list[str]), model (str|None).
+    Exits on unknown tool names.
+    """
+    for path in sorted(agents_dir.glob("*.yaml")):
+        data = yaml.safe_load(path.read_text())
+        if data.get("name") == name:
+            tool_names = [t["name"] for t in data.get("tools", [])]
+            tools = []
+            for tool_name in tool_names:
+                if tool_name not in _TOOL_MAP:
+                    print(f"Error: agent '{name}' references unknown tool '{tool_name}'", file=sys.stderr)
+                    sys.exit(1)
+                tools.append(_TOOL_MAP[tool_name])
+            return {
+                "prompt": data.get("prompt", ""),
+                "tools": tools,
+                "model": data.get("model", None),
+                "tool_names": tool_names,
+            }
+    print(f"Error: no agent named '{name}' found in {agents_dir}/", file=sys.stderr)
+    sys.exit(1)
 
 
-def build_tools(agent_name: str) -> list[Tool]:
-    """Return base tools + handoff tools for all agents this agent is allowed to call."""
-    config = REGISTRY[agent_name]
-    handoffs = [make_handoff(t) for t in config.delegates_to]
-    return config.tools + handoffs
+def run_pipeline(step_names: list[str], command: str) -> None:
+    """Run command through each agent in sequence, chaining responses."""
+    current_input = command
+    for step_name in step_names:
+        agent = load_agent(step_name)
+        model = agent["model"] or DEFAULT_MODEL
+        messages: list = [{"role": "system", "content": agent["prompt"]}]
+        print(f"\n[agent: {step_name}]")
+        agent_loop(current_input, messages, model=model, tools=agent["tools"])
+        # Extract final assistant text from messages
+        for msg in reversed(messages):
+            if msg["role"] == "assistant" and msg.get("content"):
+                current_input = msg["content"]
+                break
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Run a command through a workflow pipeline")
+    parser.add_argument("workflow", help="Name of the workflow to run")
+    parser.add_argument("command", help="Initial command to send to the first agent")
+    args = parser.parse_args()
+
+    step_names = load_workflow(args.workflow)
+    run_pipeline(step_names, args.command)
+
+
+if __name__ == "__main__":
+    main()
