@@ -4,14 +4,22 @@
 import argparse
 import sys
 from pathlib import Path
+from typing import TypedDict
 
 import yaml
 
 from agent_openrouter import MODEL as DEFAULT_MODEL, agent_loop
-from tools import ALL_TOOLS
+from tools import ALL_TOOLS, Tool
 
 _TOOL_MAP = {t.name: t for t in ALL_TOOLS}
 _HERE = Path(__file__).parent
+
+
+class AgentConfig(TypedDict):
+    prompt: str
+    tools: list[Tool]
+    tool_names: list[str]
+    model: str | None
 
 
 def load_workflow(name: str, workflows_dir: Path = _HERE / "workflows") -> list[str]:
@@ -24,7 +32,7 @@ def load_workflow(name: str, workflows_dir: Path = _HERE / "workflows") -> list[
     sys.exit(1)
 
 
-def load_agent(name: str, agents_dir: Path = _HERE / "agents") -> dict[str, object]:
+def load_agent(name: str, agents_dir: Path = _HERE / "agents") -> AgentConfig:
     """Scan agents_dir for a YAML whose name: field matches name.
 
     Returns dict with keys: prompt, tools (list[Tool]), tool_names (list[str]), model (str|None).
