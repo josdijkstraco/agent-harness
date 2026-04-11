@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+"""Multi-agent coding harness — entry point."""
+
+import argparse
+import os
+import select
+import sys
+import termios
+import threading
+import tty
+
+from dotenv import load_dotenv
+from prompt_toolkit import prompt as pt_prompt
+from prompt_toolkit.completion import WordCompleter
+
+load_dotenv()
+
+API_KEY = os.environ.get("OPENROUTER_API_KEY")
+if not API_KEY:
+    print("Error: OPENROUTER_API_KEY environment variable is required.")
+    sys.exit(1)
+
+from agent_openrouter import AVAILABLE_MODELS, MODEL, agent_loop
+from skills_loader import SKILLS, build_system_prompt
+from mcp_client import build_all_mcp_clients
+
+IS_TTY = sys.stdout.isatty()
+
+COMMAND_COMPLETER = WordCompleter(["/model", "/clear"], sentence=True)
+
+
+def watch_for_escape(cancel_event: threading.Event, done_event: threading.Event) -> None:
+    """Set cancel_event if Escape is pressed; runs in a background thread."""
+    if not IS_TTY:
+        return
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)  # char-at-a-time, but signals + output processing still work
+        while not done_event.is_set():
+            if select.select([sys.stdin], [], [], 0.05)[0]:
+                ch = sys.stdin.read(1)
+                if ch == "\x1b":  # Escape
+                    cancel_event.set()
+                    return
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+
+def status_text(model: str, session_in: int, session_out: int, turns: int) -> str:
+    return (
+        f" Tokens: {session_in:,} in / {session_out:,} out"
+        f"  |  History: {turns} turn{'s' if turns != 1 else ''}"
+        f"  |  Model: {model}"
+    )
+
+
+def select_model(current: str) -> str:
+    print("Available models:")
+    for i, m in enumerate(AVAILABLE_MODELS, 1):
+        marker = " *" if m == current else ""
+        print(f"  {i}. {m}{marker}")
+    try:
+        choice = input("Pick a number (or press Enter to keep current): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return current
+    if not choice:
+        return current
+    try:
+        idx = int(choice) - 1
+        if 0 <= idx < len(AVAILABLE_MODELS):
+            selected = AVAILABLE_MODELS[idx]
+            print(f"Model set to: {selected}")
+            return selected
+        print("Invalid selection, keeping current model.")
+    except ValueError:
+        print("Invalid input, keeping current model.")
+    return current
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Multi-agent coding harness")
+    parser.parse_args()
+
+    mcp_clients = build_all_mcp_clients()
+    for client in mcp_clients:
+        names = [t["function"]["name"] for t in client.tools]
+        print(f"  [{client.name}] tools: {', '.join(names)}")
+
+    skill_names = list(SKILLS.keys())
+    system_prompt = build_system_prompt(skill_names)
+
+    print("Multi-Agent Harness (type 'exit' to quit, '/model' to switch, '/clear' to reset history)")
+    if skill_names:
+        print("Loaded skills: " + ", ".join(skill_names))
+    messages: list = [{"role": "system", "content": system_prompt}]
+    current_model = MODEL
+    session_in = 0
+    session_out = 0
+
+    turns = 0
+
+    while True:
+        try:
+            if IS_TTY:
+                import warnings
+                toolbar = status_text(current_model, session_in, session_out, turns)
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", message=".*CPR.*")
+                    user_input = pt_prompt("> ", completer=COMMAND_COMPLETER, bottom_toolbar=toolbar)
+            else:
+                user_input = input("> ")
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        if user_input.strip().lower() in ("exit", "quit"):
+            break
+        if user_input.strip() == "/model":
+            current_model = select_model(current_model)
+            continue
+        if user_input.strip() == "/clear":
+            messages.clear()
+            messages.append({"role": "system", "content": system_prompt})
+            session_in = 0
+            session_out = 0
+            turns = 0
+            print("History cleared.")
+            continue
+        if not user_input.strip():
+            continue
+
+        cancel_event = threading.Event()
+        done_event = threading.Event()
+        result: dict = {}
+
+        def _run() -> None:
+            result["usage"] = agent_loop(user_input, messages, model=current_model, cancel_event=cancel_event, mcp_clients=mcp_clients)
+
+        agent_thread = threading.Thread(target=_run, daemon=True)
+        watcher_thread = threading.Thread(target=watch_for_escape, args=(cancel_event, done_event), daemon=True)
+        watcher_thread.start()
+        agent_thread.start()
+        try:
+            agent_thread.join()
+        except KeyboardInterrupt:
+            cancel_event.set()
+            agent_thread.join()
+        finally:
+            done_event.set()
+
+        usage = result.get("usage", {"input_tokens": 0, "output_tokens": 0, "cancelled": True})
+        if usage.get("cancelled"):
+            print("\nRequest interrupted.")
+        else:
+            session_in += usage["input_tokens"]
+            session_out += usage["output_tokens"]
+            turns = (len(messages) - 1) // 2
+
+    for client in mcp_clients:
+        client.close()
+
+
+if __name__ == "__main__":
+    main()
+
