@@ -11,9 +11,10 @@ from agent_openrouter import MODEL as DEFAULT_MODEL, agent_loop
 from tools import ALL_TOOLS
 
 _TOOL_MAP = {t.name: t for t in ALL_TOOLS}
+_HERE = Path(__file__).parent
 
 
-def load_workflow(name: str, workflows_dir: Path = Path("workflows")) -> list[str]:
+def load_workflow(name: str, workflows_dir: Path = _HERE / "workflows") -> list[str]:
     """Scan workflows_dir for a YAML whose name: field matches name."""
     for path in sorted(workflows_dir.glob("*.yaml")):
         data = yaml.safe_load(path.read_text())
@@ -23,7 +24,7 @@ def load_workflow(name: str, workflows_dir: Path = Path("workflows")) -> list[st
     sys.exit(1)
 
 
-def load_agent(name: str, agents_dir: Path = Path("agents")) -> dict:
+def load_agent(name: str, agents_dir: Path = _HERE / "agents") -> dict[str, object]:
     """Scan agents_dir for a YAML whose name: field matches name.
 
     Returns dict with keys: prompt, tools (list[Tool]), tool_names (list[str]), model (str|None).
@@ -57,12 +58,19 @@ def run_pipeline(step_names: list[str], command: str) -> None:
         model = agent["model"] or DEFAULT_MODEL
         messages: list = [{"role": "system", "content": agent["prompt"]}]
         print(f"\n[agent: {step_name}]")
-        agent_loop(current_input, messages, model=model, tools=agent["tools"])
+        usage = agent_loop(current_input, messages, model=model, tools=agent["tools"])
+        if usage.get("cancelled"):
+            print("\nPipeline cancelled.", file=sys.stderr)
+            sys.exit(0)
         # Extract final assistant text from messages
+        updated = False
         for msg in reversed(messages):
             if msg["role"] == "assistant" and msg.get("content"):
                 current_input = msg["content"]
+                updated = True
                 break
+        if not updated:
+            print(f"Warning: agent '{step_name}' produced no text output; passing previous input forward.", file=sys.stderr)
 
 
 def main() -> None:
