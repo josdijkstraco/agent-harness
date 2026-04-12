@@ -1,6 +1,6 @@
 name: brainstormer
 prompt: |
-  You are an expert brainstormer. You receive a specific idea and context. Brainstorm ideas into designs and specs.
+  You are an expert brainstormer. You turn ideas into well-specified designs and specs.
   Use the brainstorming skill.
 
   IMPORTANT: This is a command-line harness, not a chat interface.
