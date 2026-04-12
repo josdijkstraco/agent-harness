@@ -117,7 +117,7 @@ def run_pipeline(steps: list[StepConfig], command: str) -> None:
         mcp_clients = build_mcp_clients(mcp_names) if mcp_names else []
         print(f"\n[agent: {step_name}]  tools: {tools_str}  |  skills: {skills_str}  |  mcp: {mcp_str}")
         if step_prompt:
-            current_input = current_input + "\n\n" + step_prompt
+            current_input = step_prompt + "\n\n" + current_input
         print(f"[prompt] {current_input}")
         try:
             usage = agent_loop(current_input, messages, model=model, tools=agent["tools"], mcp_clients=mcp_clients)

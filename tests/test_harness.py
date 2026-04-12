@@ -168,7 +168,7 @@ def test_main_workflow_subcommand(monkeypatch):
 
 
 def test_run_pipeline_appends_step_prompt(monkeypatch):
-    """Step prompt is appended to current_input with double newline separator."""
+    """Step prompt is prepended to current_input with double newline separator."""
     from unittest.mock import patch
     from harness import run_pipeline
 
@@ -193,7 +193,7 @@ def test_run_pipeline_appends_step_prompt(monkeypatch):
          patch("harness.build_mcp_clients", return_value=[]):
         run_pipeline([{"name": "agent1", "prompt": "Extra guidance"}], "Initial command")
 
-    assert captured_inputs[0] == "Initial command\n\nExtra guidance"
+    assert captured_inputs[0] == "Extra guidance\n\nInitial command"
 
 
 def test_run_pipeline_no_step_prompt_passes_input_unchanged(monkeypatch):

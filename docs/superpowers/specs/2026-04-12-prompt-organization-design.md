@@ -46,7 +46,7 @@ Each layer answers exactly one question. If guidance answers a different questio
 **Question:** "What matters in this pipeline?"
 
 - 1–2 sentences of workflow context
-- Appended to the previous step's output before the agent runs
+- Prepended before the previous step's output (context first, then content)
 - Specific to this workflow and position; would not apply universally
 
 **Example:**
