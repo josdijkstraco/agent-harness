@@ -26,6 +26,11 @@ class AgentConfig(TypedDict):
     model: str | None
 
 
+class JobConfig(TypedDict):
+    steps: list[str]
+    prompt: str
+
+
 def load_workflow(name: str, workflows_dir: Path = _HERE / "workflows") -> list[str]:
     """Scan workflows_dir for a YAML whose name: field matches name."""
     for path in sorted(workflows_dir.glob("*.yaml")):
@@ -33,6 +38,19 @@ def load_workflow(name: str, workflows_dir: Path = _HERE / "workflows") -> list[
         if data.get("name") == name:
             return [step["name"] for step in data.get("steps", [])]
     print(f"Error: no workflow named '{name}' found in {workflows_dir}/", file=sys.stderr)
+    sys.exit(1)
+
+
+def load_job(name: str, jobs_dir: Path = _HERE / "jobs") -> JobConfig:
+    """Scan jobs_dir for a YAML whose name: field matches name."""
+    for path in sorted(jobs_dir.glob("*.yaml")):
+        data = yaml.safe_load(path.read_text())
+        if data.get("name") == name:
+            return {
+                "steps": [step["name"] for step in data.get("steps", [])],
+                "prompt": data.get("prompt", ""),
+            }
+    print(f"Error: no job named '{name}' found in {jobs_dir}/", file=sys.stderr)
     sys.exit(1)
 
 
