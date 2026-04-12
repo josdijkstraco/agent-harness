@@ -63,3 +63,80 @@ def test_load_agent_unknown_tool_raises(tmp_path):
     from harness import load_agent
     with pytest.raises(SystemExit):
         load_agent("myagent", agents_dir=tmp_path)
+
+
+def test_load_job_finds_by_name(tmp_path):
+    """Scans directory and returns steps and prompt for a matching job name."""
+    job = tmp_path / "myjob.yaml"
+    job.write_text("name: myjob\nsteps:\n  - name: agent1\nprompt: Do something.")
+    from harness import load_job
+    job_cfg = load_job("myjob", jobs_dir=tmp_path)
+    assert job_cfg["steps"] == ["agent1"]
+    assert job_cfg["prompt"] == "Do something."
+
+
+def test_load_job_not_found_raises(tmp_path):
+    """Raises SystemExit when no job matches the name."""
+    from harness import load_job
+    with pytest.raises(SystemExit):
+        load_job("missing", jobs_dir=tmp_path)
+
+
+def test_load_job_returns_prompt(tmp_path):
+    """Job prompt is returned verbatim, including multi-line content."""
+    job = tmp_path / "myjob.yaml"
+    job.write_text(
+        "name: myjob\nsteps:\n  - name: agent1\nprompt: |\n  Line 1\n  Line 2\n  Line 3\n"
+    )
+    from harness import load_job
+    job_cfg = load_job("myjob", jobs_dir=tmp_path)
+    assert job_cfg["prompt"] == "Line 1\nLine 2\nLine 3\n"
+
+
+def test_main_workflow_subcommand(tmp_path, monkeypatch):
+    """main() with workflow subcommand loads workflow and runs pipeline."""
+    from unittest.mock import patch, MagicMock
+    from harness import main
+
+    # Mock load_workflow and run_pipeline
+    with patch("harness.load_workflow") as mock_load_wf, \
+         patch("harness.run_pipeline") as mock_run_pipeline:
+        mock_load_wf.return_value = ["agent1", "agent2"]
+
+        # Set sys.argv for argparse
+        test_argv = ["harness.py", "workflow", "example", "Fix the bug"]
+        monkeypatch.setattr(sys, "argv", test_argv)
+
+        main()
+
+        # Assert load_workflow was called with correct name
+        mock_load_wf.assert_called_once_with("example")
+        # Assert run_pipeline was called with steps and prompt
+        mock_run_pipeline.assert_called_once_with(["agent1", "agent2"], "Fix the bug")
+
+
+def test_main_job_subcommand(tmp_path, monkeypatch):
+    """main() with job subcommand loads job and runs pipeline."""
+    from unittest.mock import patch, MagicMock
+    from harness import main
+
+    # Mock load_job and run_pipeline
+    with patch("harness.load_job") as mock_load_job, \
+         patch("harness.run_pipeline") as mock_run_pipeline:
+        mock_load_job.return_value = {
+            "steps": ["agent3", "agent4"],
+            "prompt": "Fix the login bug.\n",
+        }
+
+        # Set sys.argv for argparse
+        test_argv = ["harness.py", "job", "fix-login"]
+        monkeypatch.setattr(sys, "argv", test_argv)
+
+        main()
+
+        # Assert load_job was called with correct name
+        mock_load_job.assert_called_once_with("fix-login")
+        # Assert run_pipeline was called with steps and prompt from job config
+        mock_run_pipeline.assert_called_once_with(
+            ["agent3", "agent4"], "Fix the login bug.\n"
+        )
