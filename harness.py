@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Workflow pipeline executor — runs a command through a chain of agents."""
+"""Agent pipeline executor — runs workflows and jobs through agent chains."""
 
 import argparse
 import sys
@@ -124,20 +124,22 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
 
     wf = subparsers.add_parser("workflow", help="Run a workflow with an ad-hoc prompt")
-    wf.add_argument("name")
-    wf.add_argument("prompt")
+    wf.add_argument("name", help="workflow name")
+    wf.add_argument("prompt", help="initial prompt to send to the first agent")
 
     job = subparsers.add_parser("job", help="Run a pre-canned job")
-    job.add_argument("name")
+    job.add_argument("name", help="job name")
 
     args = parser.parse_args()
 
     if args.subcommand == "workflow":
         step_names = load_workflow(args.name)
         run_pipeline(step_names, args.prompt)
-    else:
+    elif args.subcommand == "job":
         job_cfg = load_job(args.name)
         run_pipeline(job_cfg["steps"], job_cfg["prompt"])
+    else:
+        parser.error(f"Unknown subcommand: {args.subcommand}")
 
 
 if __name__ == "__main__":
