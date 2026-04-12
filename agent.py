@@ -83,7 +83,10 @@ def agent_loop(user_message: str, messages: list, system: str, tools: list[Tool]
         tool_results = []
         for block in response["content"]:
             if block["type"] == "tool_use":
-                print(f"  [Tool: {block['name']}], params: {block['input']}")
+                params_str = str(block['input'])
+                if len(params_str) > 50:
+                    params_str = params_str[:50] + "..."
+                print(f"  [Tool: {block['name']}], params: {params_str}")
                 result = execute_tool(block["name"], block["input"], tools)
                 tool_results.append({
                     "type": "tool_result",

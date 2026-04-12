@@ -9,6 +9,7 @@ from typing import TypedDict
 import yaml
 
 from agent_openrouter import MODEL as DEFAULT_MODEL, agent_loop
+from skills_loader import append_skills
 from tools import ALL_TOOLS, Tool
 
 _TOOL_MAP = {t.name: t for t in ALL_TOOLS}
@@ -19,6 +20,7 @@ class AgentConfig(TypedDict):
     prompt: str
     tools: list[Tool]
     tool_names: list[str]
+    skill_names: list[str]
     model: str | None
 
 
@@ -48,11 +50,15 @@ def load_agent(name: str, agents_dir: Path = _HERE / "agents") -> AgentConfig:
                     print(f"Error: agent '{name}' references unknown tool '{tool_name}'", file=sys.stderr)
                     sys.exit(1)
                 tools.append(_TOOL_MAP[tool_name])
+            raw_skills = data.get("skills", [])
+            skill_names = [s["name"] if isinstance(s, dict) else s for s in raw_skills]
+            prompt = append_skills(data.get("prompt", ""), skill_names)
             return {
-                "prompt": data.get("prompt", ""),
+                "prompt": prompt,
                 "tools": tools,
                 "model": data.get("model", None),
                 "tool_names": tool_names,
+                "skill_names": skill_names,
             }
     print(f"Error: no agent named '{name}' found in {agents_dir}/", file=sys.stderr)
     sys.exit(1)
@@ -65,7 +71,9 @@ def run_pipeline(step_names: list[str], command: str) -> None:
         agent = load_agent(step_name)
         model = agent["model"] or DEFAULT_MODEL
         messages: list = [{"role": "system", "content": agent["prompt"]}]
-        print(f"\n[agent: {step_name}]")
+        tools_str = ", ".join(agent["tool_names"]) or "none"
+        skills_str = ", ".join(agent["skill_names"]) or "none"
+        print(f"\n[agent: {step_name}]  tools: {tools_str}  |  skills: {skills_str}  |  mcp: none")
         usage = agent_loop(current_input, messages, model=model, tools=agent["tools"])
         if usage.get("cancelled"):
             print("\nPipeline cancelled.", file=sys.stderr)

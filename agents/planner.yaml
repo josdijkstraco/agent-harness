@@ -7,3 +7,5 @@ prompt: |
 tools:
   - name: read_file
   - name: find_files
+skills:
+  - brainstorming

@@ -90,4 +90,17 @@ find_files = Tool(
     handler=handle_find_files,
 )
 
-ALL_TOOLS = [read_file, write_file, bash, find_files]
+
+def handle_ask_user(params: dict) -> str:
+    question = params.get("question", "")
+    if question:
+        print(f"\n{question}")
+    return input("> ").strip()
+
+
+ask_user = Tool(
+    schema=make_schema("ask_user", "Ask the user a question and wait for their response.", question="The question to ask the user."),
+    handler=handle_ask_user,
+)
+
+ALL_TOOLS = [read_file, write_file, bash, find_files, ask_user]

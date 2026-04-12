@@ -1,0 +1,4 @@
+name: brainstorm
+description: Brainstorm ideas into designs and specs.
+steps:
+  - name: brainstormer

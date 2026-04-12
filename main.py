@@ -48,9 +48,10 @@ def watch_for_escape(cancel_event: threading.Event, done_event: threading.Event)
 
 
 
-def status_text(model: str, session_in: int, session_out: int, turns: int) -> str:
+def status_text(model: str, session_in: int, session_out: int, turns: int, session_cost: float = 0.0) -> str:
     return (
         f" Tokens: {session_in:,} in / {session_out:,} out"
+        f"  |  Cost: ${session_cost:.4f}"
         f"  |  History: {turns} turn{'s' if turns != 1 else ''}"
         f"  |  Model: {model}"
     )
@@ -99,6 +100,7 @@ def main() -> None:
     current_model = MODEL
     session_in = 0
     session_out = 0
+    session_cost = 0.0
 
     turns = 0
 
@@ -106,10 +108,11 @@ def main() -> None:
         try:
             if IS_TTY:
                 import warnings
-                toolbar = status_text(current_model, session_in, session_out, turns)
+                def _toolbar() -> str:
+                    return status_text(current_model, session_in, session_out, turns, session_cost)
                 with warnings.catch_warnings():
                     warnings.filterwarnings("ignore", message=".*CPR.*")
-                    user_input = pt_prompt("> ", completer=COMMAND_COMPLETER, bottom_toolbar=toolbar)
+                    user_input = pt_prompt("> ", completer=COMMAND_COMPLETER, bottom_toolbar=_toolbar, refresh_interval=0.5)
             else:
                 user_input = input("> ")
         except (EOFError, KeyboardInterrupt):
@@ -156,6 +159,7 @@ def main() -> None:
         else:
             session_in += usage["input_tokens"]
             session_out += usage["output_tokens"]
+            session_cost += usage.get("cost", 0.0)
             turns = (len(messages) - 1) // 2
 
     for client in mcp_clients:

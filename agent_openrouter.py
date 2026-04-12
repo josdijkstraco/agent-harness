@@ -119,6 +119,7 @@ def agent_loop(
 
     total_input = 0
     total_output = 0
+    total_cost = 0.0
 
     try:
         while True:
@@ -163,6 +164,7 @@ def agent_loop(
 
             total_input += usage.get("prompt_tokens", 0)
             total_output += usage.get("completion_tokens", 0)
+            total_cost += usage.get("cost", 0.0)
 
             content = "".join(content_parts) or None
             tool_calls = [tool_calls_acc[i] for i in sorted(tool_calls_acc)] or None
@@ -181,7 +183,10 @@ def agent_loop(
                 for tool_call in tool_calls:
                     name = tool_call["function"]["name"]
                     params = json.loads(tool_call["function"]["arguments"])
-                    print(f"  [Tool: {name}], params: {params}")
+                    params_str = str(params)
+                    if len(params_str) > 50:
+                        params_str = params_str[:50] + "..."
+                    print(f"  [Tool: {name}], params: {params_str}")
                     result = execute_tool(name, params, tool_handlers, mcp_clients)
                     tool_results.append({
                         "role": "tool",
@@ -192,6 +197,6 @@ def agent_loop(
 
     except RequestCancelled:
         del messages[initial_len:]
-        return {"input_tokens": total_input, "output_tokens": total_output, "cancelled": True}
+        return {"input_tokens": total_input, "output_tokens": total_output, "cost": total_cost, "cancelled": True}
 
-    return {"input_tokens": total_input, "output_tokens": total_output}
+    return {"input_tokens": total_input, "output_tokens": total_output, "cost": total_cost}

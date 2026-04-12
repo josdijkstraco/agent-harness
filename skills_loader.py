@@ -39,6 +39,23 @@ def _load_skills() -> dict[str, dict]:
 SKILLS: dict[str, dict] = _load_skills()
 
 
+def append_skills(base_prompt: str, skill_names: list[str]) -> str:
+    """Append skill availability notice to an existing prompt."""
+    selected = [SKILLS[n] for n in skill_names if n in SKILLS]
+    if not selected:
+        return base_prompt
+    skills_list = "\n".join(
+        f"- **{s['name']}** ({s['path']}): {s['description']}" for s in selected
+    )
+    return (
+        base_prompt
+        + "\n\nYou have the following skills available:\n"
+        + skills_list
+        + "\n\nWhen you decide to use a skill, use the read_file tool to read the "
+          "full contents of the skill file before using it."
+    )
+
+
 def build_system_prompt(skill_names: list[str] | None = None) -> str:
     """Build a system prompt, optionally including named skills."""
     selected = [SKILLS[n] for n in (skill_names or []) if n in SKILLS]
