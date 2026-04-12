@@ -93,9 +93,9 @@ def test_load_job_returns_prompt(tmp_path):
     assert job_cfg["prompt"] == "Line 1\nLine 2\nLine 3\n"
 
 
-def test_main_workflow_subcommand(tmp_path, monkeypatch):
+def test_main_workflow_subcommand(monkeypatch):
     """main() with workflow subcommand loads workflow and runs pipeline."""
-    from unittest.mock import patch, MagicMock
+    from unittest.mock import patch
     from harness import main
 
     # Mock load_workflow and run_pipeline
@@ -115,9 +115,9 @@ def test_main_workflow_subcommand(tmp_path, monkeypatch):
         mock_run_pipeline.assert_called_once_with(["agent1", "agent2"], "Fix the bug")
 
 
-def test_main_job_subcommand(tmp_path, monkeypatch):
+def test_main_job_subcommand(monkeypatch):
     """main() with job subcommand loads job and runs pipeline."""
-    from unittest.mock import patch, MagicMock
+    from unittest.mock import patch
     from harness import main
 
     # Mock load_job and run_pipeline
