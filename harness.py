@@ -120,13 +120,24 @@ def run_pipeline(step_names: list[str], command: str) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run a command through a workflow pipeline")
-    parser.add_argument("workflow", help="Name of the workflow to run")
-    parser.add_argument("command", help="Initial command to send to the first agent")
+    parser = argparse.ArgumentParser(description="Run agent pipelines")
+    subparsers = parser.add_subparsers(dest="subcommand", required=True)
+
+    wf = subparsers.add_parser("workflow", help="Run a workflow with an ad-hoc prompt")
+    wf.add_argument("name")
+    wf.add_argument("prompt")
+
+    job = subparsers.add_parser("job", help="Run a pre-canned job")
+    job.add_argument("name")
+
     args = parser.parse_args()
 
-    step_names = load_workflow(args.workflow)
-    run_pipeline(step_names, args.command)
+    if args.subcommand == "workflow":
+        step_names = load_workflow(args.name)
+        run_pipeline(step_names, args.prompt)
+    else:
+        job_cfg = load_job(args.name)
+        run_pipeline(job_cfg["steps"], job_cfg["prompt"])
 
 
 if __name__ == "__main__":
