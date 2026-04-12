@@ -41,13 +41,19 @@ def load_workflow(name: str, workflows_dir: Path = _HERE / "workflows") -> list[
     sys.exit(1)
 
 
-def load_job(name: str, jobs_dir: Path = _HERE / "jobs") -> JobConfig:
+def load_job(
+    name: str,
+    jobs_dir: Path = _HERE / "jobs",
+    workflows_dir: Path = _HERE / "workflows",
+) -> JobConfig:
     """Scan jobs_dir for a YAML whose name: field matches name."""
     for path in sorted(jobs_dir.glob("*.yaml")):
         data = yaml.safe_load(path.read_text())
         if data.get("name") == name:
+            workflow_name = data.get("workflow", "")
+            steps = load_workflow(workflow_name, workflows_dir=workflows_dir) if workflow_name else []
             return {
-                "steps": [step["name"] for step in data.get("steps", [])],
+                "steps": steps,
                 "prompt": data.get("prompt", ""),
             }
     print(f"Error: no job named '{name}' found in {jobs_dir}/", file=sys.stderr)

@@ -66,11 +66,13 @@ def test_load_agent_unknown_tool_raises(tmp_path):
 
 
 def test_load_job_finds_by_name(tmp_path):
-    """Scans directory and returns steps and prompt for a matching job name."""
+    """Resolves steps from the referenced workflow."""
+    wf = tmp_path / "mywf.yaml"
+    wf.write_text("name: mywf\nsteps:\n  - name: agent1\n")
     job = tmp_path / "myjob.yaml"
-    job.write_text("name: myjob\nsteps:\n  - name: agent1\nprompt: Do something.")
+    job.write_text("name: myjob\nworkflow: mywf\nprompt: Do something.")
     from harness import load_job
-    job_cfg = load_job("myjob", jobs_dir=tmp_path)
+    job_cfg = load_job("myjob", jobs_dir=tmp_path, workflows_dir=tmp_path)
     assert job_cfg["steps"] == ["agent1"]
     assert job_cfg["prompt"] == "Do something."
 
@@ -91,8 +93,8 @@ def test_load_job_missing_prompt_defaults_to_empty(tmp_path):
     assert job_cfg["prompt"] == ""
 
 
-def test_load_job_missing_steps_defaults_to_empty(tmp_path):
-    """Returns empty list for steps when the field is absent from YAML."""
+def test_load_job_missing_workflow_defaults_to_empty_steps(tmp_path):
+    """Returns empty steps list when workflow field is absent."""
     job = tmp_path / "myjob.yaml"
     job.write_text("name: myjob\nprompt: Do something.\n")
     from harness import load_job
