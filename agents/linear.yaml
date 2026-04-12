@@ -1,0 +1,8 @@
+name: linear
+prompt: |
+  You are an expert linear user. You receive a specific task and context. Use the linear tool to complete the task.
+tools:
+  - name: ask_user
+skills: []
+mcp:
+  - name: linear
