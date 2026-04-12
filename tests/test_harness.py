@@ -8,12 +8,32 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
 def test_load_workflow_finds_by_name(tmp_path):
-    """Scans directory and returns steps for a matching workflow name."""
+    """Scans directory and returns step dicts for a matching workflow name."""
     wf = tmp_path / "mywf.yaml"
     wf.write_text("name: mywf\nsteps:\n  - name: agent1\n  - name: agent2\n")
     from harness import load_workflow
     steps = load_workflow("mywf", workflows_dir=tmp_path)
-    assert steps == ["agent1", "agent2"]
+    assert steps == [{"name": "agent1", "prompt": None}, {"name": "agent2", "prompt": None}]
+
+
+def test_load_workflow_step_with_prompt(tmp_path):
+    """Step dict includes prompt when present in YAML."""
+    wf = tmp_path / "mywf.yaml"
+    wf.write_text(
+        "name: mywf\nsteps:\n  - name: agent1\n    prompt: 'Focus on tests.'\n"
+    )
+    from harness import load_workflow
+    steps = load_workflow("mywf", workflows_dir=tmp_path)
+    assert steps == [{"name": "agent1", "prompt": "Focus on tests."}]
+
+
+def test_load_workflow_step_without_prompt_is_none(tmp_path):
+    """Step dict has prompt=None when prompt field is absent."""
+    wf = tmp_path / "mywf.yaml"
+    wf.write_text("name: mywf\nsteps:\n  - name: agent1\n")
+    from harness import load_workflow
+    steps = load_workflow("mywf", workflows_dir=tmp_path)
+    assert steps[0]["prompt"] is None
 
 
 def test_load_workflow_not_found_raises(tmp_path):
@@ -73,7 +93,7 @@ def test_load_job_finds_by_name(tmp_path):
     job.write_text("name: myjob\nworkflow: mywf\nprompt: Do something.")
     from harness import load_job
     job_cfg = load_job("myjob", jobs_dir=tmp_path, workflows_dir=tmp_path)
-    assert job_cfg["steps"] == ["agent1"]
+    assert job_cfg["steps"] == [{"name": "agent1", "prompt": None}]
     assert job_cfg["prompt"] == "Do something."
 
 
@@ -130,7 +150,7 @@ def test_main_workflow_subcommand(monkeypatch):
     # Mock load_workflow and run_pipeline
     with patch("harness.load_workflow") as mock_load_wf, \
          patch("harness.run_pipeline") as mock_run_pipeline:
-        mock_load_wf.return_value = ["agent1", "agent2"]
+        mock_load_wf.return_value = [{"name": "agent1", "prompt": None}, {"name": "agent2", "prompt": None}]
 
         # Set sys.argv for argparse
         test_argv = ["harness.py", "workflow", "example", "Fix the bug"]
@@ -141,7 +161,68 @@ def test_main_workflow_subcommand(monkeypatch):
         # Assert load_workflow was called with correct name
         mock_load_wf.assert_called_once_with("example")
         # Assert run_pipeline was called with steps and prompt
-        mock_run_pipeline.assert_called_once_with(["agent1", "agent2"], "Fix the bug")
+        mock_run_pipeline.assert_called_once_with(
+            [{"name": "agent1", "prompt": None}, {"name": "agent2", "prompt": None}],
+            "Fix the bug",
+        )
+
+
+def test_run_pipeline_appends_step_prompt(monkeypatch):
+    """Step prompt is appended to current_input with double newline separator."""
+    from unittest.mock import patch
+    from harness import run_pipeline
+
+    agent_config = {
+        "prompt": "System prompt",
+        "tools": [],
+        "tool_names": [],
+        "skill_names": [],
+        "mcp_names": [],
+        "model": None,
+    }
+
+    captured_inputs = []
+
+    def fake_agent_loop(user_message, messages, **kwargs):
+        captured_inputs.append(user_message)
+        messages.append({"role": "assistant", "content": "output"})
+        return {}
+
+    with patch("harness.load_agent", return_value=agent_config), \
+         patch("harness.agent_loop", side_effect=fake_agent_loop), \
+         patch("harness.build_mcp_clients", return_value=[]):
+        run_pipeline([{"name": "agent1", "prompt": "Extra guidance"}], "Initial command")
+
+    assert captured_inputs[0] == "Initial command\n\nExtra guidance"
+
+
+def test_run_pipeline_no_step_prompt_passes_input_unchanged(monkeypatch):
+    """Input is passed unchanged to agent_loop when step has no prompt."""
+    from unittest.mock import patch
+    from harness import run_pipeline
+
+    agent_config = {
+        "prompt": "System prompt",
+        "tools": [],
+        "tool_names": [],
+        "skill_names": [],
+        "mcp_names": [],
+        "model": None,
+    }
+
+    captured_inputs = []
+
+    def fake_agent_loop(user_message, messages, **kwargs):
+        captured_inputs.append(user_message)
+        messages.append({"role": "assistant", "content": "output"})
+        return {}
+
+    with patch("harness.load_agent", return_value=agent_config), \
+         patch("harness.agent_loop", side_effect=fake_agent_loop), \
+         patch("harness.build_mcp_clients", return_value=[]):
+        run_pipeline([{"name": "agent1", "prompt": None}], "Initial command")
+
+    assert captured_inputs[0] == "Initial command"
 
 
 def test_main_job_subcommand(monkeypatch):
@@ -153,7 +234,7 @@ def test_main_job_subcommand(monkeypatch):
     with patch("harness.load_job") as mock_load_job, \
          patch("harness.run_pipeline") as mock_run_pipeline:
         mock_load_job.return_value = {
-            "steps": ["agent3", "agent4"],
+            "steps": [{"name": "agent3", "prompt": None}, {"name": "agent4", "prompt": None}],
             "prompt": "Fix the login bug.\n",
         }
 
@@ -167,5 +248,6 @@ def test_main_job_subcommand(monkeypatch):
         mock_load_job.assert_called_once_with("fix-login")
         # Assert run_pipeline was called with steps and prompt from job config
         mock_run_pipeline.assert_called_once_with(
-            ["agent3", "agent4"], "Fix the login bug.\n"
+            [{"name": "agent3", "prompt": None}, {"name": "agent4", "prompt": None}],
+            "Fix the login bug.\n",
         )

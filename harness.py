@@ -26,17 +26,25 @@ class AgentConfig(TypedDict):
     model: str | None
 
 
+class StepConfig(TypedDict):
+    name: str
+    prompt: str | None
+
+
 class JobConfig(TypedDict):
-    steps: list[str]
+    steps: list[StepConfig]
     prompt: str
 
 
-def load_workflow(name: str, workflows_dir: Path = _HERE / "workflows") -> list[str]:
+def load_workflow(name: str, workflows_dir: Path = _HERE / "workflows") -> list[StepConfig]:
     """Scan workflows_dir for a YAML whose name: field matches name."""
     for path in sorted(workflows_dir.glob("*.yaml")):
         data = yaml.safe_load(path.read_text())
         if data.get("name") == name:
-            return [step["name"] for step in data.get("steps", [])]
+            return [
+                {"name": step["name"], "prompt": step.get("prompt")}
+                for step in data.get("steps", [])
+            ]
     print(f"Error: no workflow named '{name}' found in {workflows_dir}/", file=sys.stderr)
     sys.exit(1)
 
@@ -93,10 +101,12 @@ def load_agent(name: str, agents_dir: Path = _HERE / "agents") -> AgentConfig:
     sys.exit(1)
 
 
-def run_pipeline(step_names: list[str], command: str) -> None:
+def run_pipeline(steps: list[StepConfig], command: str) -> None:
     """Run command through each agent in sequence, chaining responses."""
     current_input = command
-    for step_name in step_names:
+    for step in steps:
+        step_name = step["name"]
+        step_prompt = step.get("prompt")
         agent = load_agent(step_name)
         model = agent["model"] or DEFAULT_MODEL
         messages: list = [{"role": "system", "content": agent["prompt"]}]
@@ -106,6 +116,9 @@ def run_pipeline(step_names: list[str], command: str) -> None:
         mcp_str = ", ".join(mcp_names) or "none"
         mcp_clients = build_mcp_clients(mcp_names) if mcp_names else []
         print(f"\n[agent: {step_name}]  tools: {tools_str}  |  skills: {skills_str}  |  mcp: {mcp_str}")
+        if step_prompt:
+            current_input = current_input + "\n\n" + step_prompt
+        print(f"[prompt] {current_input}")
         try:
             usage = agent_loop(current_input, messages, model=model, tools=agent["tools"], mcp_clients=mcp_clients)
         finally:
