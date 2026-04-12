@@ -82,6 +82,24 @@ def test_load_job_not_found_raises(tmp_path):
         load_job("missing", jobs_dir=tmp_path)
 
 
+def test_load_job_missing_prompt_defaults_to_empty(tmp_path):
+    """Returns empty string for prompt when the field is absent from YAML."""
+    job = tmp_path / "myjob.yaml"
+    job.write_text("name: myjob\nsteps:\n  - name: agent1\n")
+    from harness import load_job
+    job_cfg = load_job("myjob", jobs_dir=tmp_path)
+    assert job_cfg["prompt"] == ""
+
+
+def test_load_job_missing_steps_defaults_to_empty(tmp_path):
+    """Returns empty list for steps when the field is absent from YAML."""
+    job = tmp_path / "myjob.yaml"
+    job.write_text("name: myjob\nprompt: Do something.\n")
+    from harness import load_job
+    job_cfg = load_job("myjob", jobs_dir=tmp_path)
+    assert job_cfg["steps"] == []
+
+
 def test_load_job_returns_prompt(tmp_path):
     """Job prompt is returned verbatim, including multi-line content."""
     job = tmp_path / "myjob.yaml"
