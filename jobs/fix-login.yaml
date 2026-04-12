@@ -1,8 +1,0 @@
-name: fix-login
-description: Fix the authentication timeout bug
-workflow: example
-prompt: |
-  Fix the login timeout bug in the auth module. Users are being logged out
-  after 5 minutes instead of the configured 30-minute session window.
-  Locate the relevant session/token handling code, identify the root
-  cause, and apply a minimal, well-tested fix.

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Agent pipeline executor — runs workflows and jobs through agent chains."""
+"""Agent pipeline executor — runs workflows through agent chains."""
 
 import argparse
 import sys
 from pathlib import Path
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 import yaml
 
@@ -29,11 +29,9 @@ class AgentConfig(TypedDict):
 class StepConfig(TypedDict):
     name: str
     prompt: str | None
-
-
-class JobConfig(TypedDict):
-    steps: list[StepConfig]
-    prompt: str
+    loop_on: NotRequired[str | None]
+    loop_to: NotRequired[str | None]
+    max_loops: NotRequired[int | None]
 
 
 def load_workflow(name: str, workflows_dir: Path = _HERE / "workflows") -> list[StepConfig]:
@@ -41,30 +39,31 @@ def load_workflow(name: str, workflows_dir: Path = _HERE / "workflows") -> list[
     for path in sorted(workflows_dir.glob("*.yaml")):
         data = yaml.safe_load(path.read_text())
         if data.get("name") == name:
-            return [
-                {"name": step["name"], "prompt": step.get("prompt")}
-                for step in data.get("steps", [])
-            ]
+            steps: list[StepConfig] = []
+            seen_names: list[str] = []
+            for step in data.get("steps", []):
+                step_name = step["name"]
+                loop_on = step.get("loop_on") or None
+                loop_to = step.get("loop_to") or None
+                max_loops = step.get("max_loops")
+                if (loop_on is None) != (loop_to is None):
+                    print(f"Error: step '{step_name}' must have both loop_on and loop_to, or neither.", file=sys.stderr)
+                    sys.exit(1)
+                if loop_to is not None and loop_to not in seen_names:
+                    print(f"Error: step '{step_name}' loop_to='{loop_to}' must refer to an earlier step.", file=sys.stderr)
+                    sys.exit(1)
+                if loop_on is not None and max_loops is None:
+                    max_loops = 3
+                steps.append({
+                    "name": step_name,
+                    "prompt": step.get("prompt") or None,
+                    "loop_on": loop_on,
+                    "loop_to": loop_to,
+                    "max_loops": max_loops,
+                })
+                seen_names.append(step_name)
+            return steps
     print(f"Error: no workflow named '{name}' found in {workflows_dir}/", file=sys.stderr)
-    sys.exit(1)
-
-
-def load_job(
-    name: str,
-    jobs_dir: Path = _HERE / "jobs",
-    workflows_dir: Path = _HERE / "workflows",
-) -> JobConfig:
-    """Scan jobs_dir for a YAML whose name: field matches name."""
-    for path in sorted(jobs_dir.glob("*.yaml")):
-        data = yaml.safe_load(path.read_text())
-        if data.get("name") == name:
-            workflow_name = data.get("workflow", "")
-            steps = load_workflow(workflow_name, workflows_dir=workflows_dir) if workflow_name else []
-            return {
-                "steps": steps,
-                "prompt": data.get("prompt", ""),
-            }
-    print(f"Error: no job named '{name}' found in {jobs_dir}/", file=sys.stderr)
     sys.exit(1)
 
 
@@ -103,8 +102,13 @@ def load_agent(name: str, agents_dir: Path = _HERE / "agents") -> AgentConfig:
 
 def run_pipeline(steps: list[StepConfig], command: str) -> None:
     """Run command through each agent in sequence, chaining responses."""
+    step_index_map: dict[str, int] = {s["name"]: i for i, s in enumerate(steps)}
+    loop_counts: dict[str, int] = {}
     current_input = command
-    for step in steps:
+    step_index = 0
+
+    while step_index < len(steps):
+        step = steps[step_index]
         step_name = step["name"]
         step_prompt = step.get("prompt")
         agent = load_agent(step_name)
@@ -116,11 +120,10 @@ def run_pipeline(steps: list[StepConfig], command: str) -> None:
         mcp_str = ", ".join(mcp_names) or "none"
         mcp_clients = build_mcp_clients(mcp_names) if mcp_names else []
         print(f"\n[agent: {step_name}]  tools: {tools_str}  |  skills: {skills_str}  |  mcp: {mcp_str}")
-        if step_prompt:
-            current_input = step_prompt + "\n\n" + current_input
-        print(f"[prompt] {current_input}")
+        effective_input = (step_prompt + "\n\n" + current_input) if step_prompt else current_input
+        print(f"[prompt] {effective_input}")
         try:
-            usage = agent_loop(current_input, messages, model=model, tools=agent["tools"], mcp_clients=mcp_clients)
+            usage = agent_loop(effective_input, messages, model=model, tools=agent["tools"], mcp_clients=mcp_clients)
         finally:
             for client in mcp_clients:
                 client.close()
@@ -136,6 +139,25 @@ def run_pipeline(steps: list[StepConfig], command: str) -> None:
                 break
         if not updated:
             print(f"Warning: agent '{step_name}' produced no text output; passing previous input forward.", file=sys.stderr)
+            step_index += 1
+            continue
+        if "STOP" in current_input:
+            print("Nothing to do.", file=sys.stderr)
+            return
+        # Loop-back check
+        loop_on = step.get("loop_on")
+        loop_to = step.get("loop_to")
+        max_loops = step.get("max_loops")
+        if loop_on and loop_to and loop_on in current_input:
+            count = loop_counts.get(step_name, 0)
+            if count < max_loops:
+                loop_counts[step_name] = count + 1
+                print(f"[loop] '{step_name}' triggered '{loop_on}' (loop {count + 1}/{max_loops}), jumping to '{loop_to}'", file=sys.stderr)
+                step_index = step_index_map[loop_to]
+                continue
+            else:
+                print(f"[loop] '{step_name}' hit max_loops={max_loops}; continuing to next step.", file=sys.stderr)
+        step_index += 1
 
 
 def main() -> None:
@@ -146,17 +168,11 @@ def main() -> None:
     wf.add_argument("name", help="workflow name")
     wf.add_argument("prompt", help="initial prompt to send to the first agent")
 
-    job = subparsers.add_parser("job", help="Run a pre-canned job")
-    job.add_argument("name", help="job name")
-
     args = parser.parse_args()
 
     if args.subcommand == "workflow":
         step_names = load_workflow(args.name)
         run_pipeline(step_names, args.prompt)
-    elif args.subcommand == "job":
-        job_cfg = load_job(args.name)
-        run_pipeline(job_cfg["steps"], job_cfg["prompt"])
     else:
         parser.error(f"Unknown subcommand: {args.subcommand}")
 

@@ -15,7 +15,8 @@ echo "OPENROUTER_API_KEY=sk-..." > .env
 python main.py
 
 # Run a task through a workflow pipeline
-python harness.py <workflow-name> "<your task>"
+python harness.py workflow <workflow-name> "<your task>"
+
 ```
 
 ## Agents
@@ -106,15 +107,45 @@ steps:
   - name: planner         # Agent name (must exist in agents/)
   - name: implementer
   - name: reviewer
+    loop_on: UNAPPROVED   # If this keyword appears in the step's output...
+    loop_to: implementer  # ...jump back to this earlier step
+    max_loops: 3          # Max times to loop (default: 3)
 ```
 
 ### Running a Workflow
 
 ```bash
-python harness.py <workflow-name> "<task description>"
+python harness.py workflow <workflow-name> "<task description>"
 ```
 
 The `<task description>` is sent to the first agent. Each subsequent agent receives the previous agent's text output as its input.
+
+### Loop-Back Steps
+
+A step can loop back to an earlier step based on a keyword in its output. This is useful for implement → review cycles where the reviewer signals that more work is needed.
+
+```yaml
+steps:
+  - name: implementer
+  - name: reviewer
+    loop_on: UNAPPROVED   # keyword to watch for (substring match, case-sensitive)
+    loop_to: implementer  # name of an earlier step to re-run
+    max_loops: 3          # optional; defaults to 3
+```
+
+When `loop_on` is found in the step's output, execution jumps back to `loop_to` and the reviewer's full output (including its feedback) becomes the input to that step. When `max_loops` is exhausted, the pipeline continues to the next step.
+
+**Rules:**
+- `loop_on` and `loop_to` must both be present or both absent
+- `loop_to` must name a step that appears earlier in the workflow
+- `STOP` takes precedence over `loop_on` if both appear in the output
+
+### Special Output Keywords
+
+| Keyword | Effect |
+|---------|--------|
+| `STOP` | Exits the pipeline early with "Nothing to do." |
+| Any `loop_on` value | Jumps back to `loop_to` step (up to `max_loops` times) |
 
 ### Example: Plan → Implement → Review
 
@@ -128,7 +159,7 @@ steps:
 ```
 
 ```bash
-python harness.py example "Add a /healthz endpoint to the FastAPI app"
+python harness.py workflow example "Add a /healthz endpoint to the FastAPI app"
 ```
 
 ### Example: Brainstorm Workflow
@@ -142,7 +173,7 @@ steps:
 ```
 
 ```bash
-python harness.py brainstorm "Design a notification system for missed deadlines"
+python harness.py workflow brainstorm "Design a notification system for missed deadlines"
 ```
 
 ### Example: Single-Agent Workflow (Linear)
@@ -155,7 +186,7 @@ steps:
 ```
 
 ```bash
-python harness.py linear "Create a bug report for the login timeout issue"
+python harness.py workflow linear "Create a bug report for the login timeout issue"
 ```
 
 ---

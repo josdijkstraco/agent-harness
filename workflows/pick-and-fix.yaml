@@ -1,0 +1,21 @@
+name: pick-and-fix
+description: Pick a card and fix it.
+steps:
+  - name: linear
+    prompt: |
+      Pick a card from the 'Agent Harness' project that is in the 'todo' column
+      and move it to the 'in progress' column. Your final response needs to include
+      the context of the card. If you don't find any cards, reply with STOP.
+  - name: planner
+    prompt: |
+      Plan the fix for the request.
+  - name: implementer
+    prompt: |
+      Implement the fix.
+  - name: reviewer
+    prompt: |
+      Review the fix. If the fix is good, reply with APPROVED. If the fix is not
+      good, reply with REJECTED and explain why.
+    loop_on: REJECTED
+    loop_to: implementer
+    max_loops: 3
