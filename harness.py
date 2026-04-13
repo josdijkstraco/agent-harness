@@ -107,6 +107,9 @@ def run_pipeline(steps: list[StepConfig], command: str) -> None:
     loop_counts: dict[str, int] = {}
     current_input = command
     step_index = 0
+    total_input_tokens = 0
+    total_output_tokens = 0
+    total_cost = 0.0
 
     while step_index < len(steps):
         step = steps[step_index]
@@ -124,12 +127,20 @@ def run_pipeline(steps: list[StepConfig], command: str) -> None:
         mcp_clients = build_mcp_clients(mcp_names) if mcp_names else []
         print(f"\n[agent: {step_name}]  tools: {tools_str}  |  skills: {skills_str}  |  mcp: {mcp_str}")
         effective_input = (step_prompt + "\n\n" + current_input) if step_prompt else current_input
-        print(f"[prompt] {effective_input}")
+        print(f"[system prompt] {agent['prompt']}")
+        print(f"[user prompt] {effective_input}")
         try:
             usage = agent_loop(effective_input, messages, model=model, tools=agent["tools"], mcp_clients=mcp_clients)
         finally:
             for client in mcp_clients:
                 client.close()
+        in_tok = usage.get("input_tokens", 0)
+        out_tok = usage.get("output_tokens", 0)
+        cost = usage.get("cost", 0.0)
+        total_input_tokens += in_tok
+        total_output_tokens += out_tok
+        total_cost += cost
+        print(f"[usage: {step_name}]  in={in_tok:,}  out={out_tok:,}  cost=${cost:.4f}")
         if usage.get("cancelled"):
             print("\nPipeline cancelled.", file=sys.stderr)
             sys.exit(0)
@@ -145,6 +156,7 @@ def run_pipeline(steps: list[StepConfig], command: str) -> None:
             continue
         if "STOP" in current_input:
             print("Nothing to do.", file=sys.stderr)
+            print(f"\n[total usage]  in={total_input_tokens:,}  out={total_output_tokens:,}  cost=${total_cost:.4f}")
             return
         loop_on = step.get("loop_on")
         loop_to = step.get("loop_to")
@@ -159,6 +171,8 @@ def run_pipeline(steps: list[StepConfig], command: str) -> None:
             else:
                 print(f"[loop] '{step_name}' hit max_loops={max_loops}; continuing to next step.", file=sys.stderr)
         step_index += 1
+
+    print(f"\n[total usage]  in={total_input_tokens:,}  out={total_output_tokens:,}  cost=${total_cost:.4f}")
 
 
 def main() -> None:

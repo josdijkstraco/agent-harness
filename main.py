@@ -13,6 +13,8 @@ from dotenv import load_dotenv
 from prompt_toolkit import prompt as pt_prompt
 from prompt_toolkit.completion import WordCompleter
 
+from logo import print_logo
+
 load_dotenv()
 
 API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -84,6 +86,10 @@ def select_model(current: str) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Multi-agent coding harness")
     parser.parse_args()
+
+    if sys.stdout.isatty():
+        print_logo()
+        print()
 
     mcp_clients = build_all_mcp_clients()
     for client in mcp_clients:
@@ -168,4 +174,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
