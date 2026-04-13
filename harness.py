@@ -40,7 +40,7 @@ def load_workflow(name: str, workflows_dir: Path = _HERE / "workflows") -> list[
         data = yaml.safe_load(path.read_text())
         if data.get("name") == name:
             steps: list[StepConfig] = []
-            seen_names: list[str] = []
+            seen_names: set[str] = set()
             for step in data.get("steps", []):
                 step_name = step["name"]
                 loop_on = step.get("loop_on") or None
@@ -61,7 +61,7 @@ def load_workflow(name: str, workflows_dir: Path = _HERE / "workflows") -> list[
                     "loop_to": loop_to,
                     "max_loops": max_loops,
                 })
-                seen_names.append(step_name)
+                seen_names.add(step_name)
             return steps
     print(f"Error: no workflow named '{name}' found in {workflows_dir}/", file=sys.stderr)
     sys.exit(1)
@@ -103,6 +103,7 @@ def load_agent(name: str, agents_dir: Path = _HERE / "agents") -> AgentConfig:
 def run_pipeline(steps: list[StepConfig], command: str) -> None:
     """Run command through each agent in sequence, chaining responses."""
     step_index_map: dict[str, int] = {s["name"]: i for i, s in enumerate(steps)}
+    agent_cache: dict[str, AgentConfig] = {}
     loop_counts: dict[str, int] = {}
     current_input = command
     step_index = 0
@@ -111,7 +112,9 @@ def run_pipeline(steps: list[StepConfig], command: str) -> None:
         step = steps[step_index]
         step_name = step["name"]
         step_prompt = step.get("prompt")
-        agent = load_agent(step_name)
+        if step_name not in agent_cache:
+            agent_cache[step_name] = load_agent(step_name)
+        agent = agent_cache[step_name]
         model = agent["model"] or DEFAULT_MODEL
         messages: list = [{"role": "system", "content": agent["prompt"]}]
         tools_str = ", ".join(agent["tool_names"]) or "none"
@@ -130,7 +133,6 @@ def run_pipeline(steps: list[StepConfig], command: str) -> None:
         if usage.get("cancelled"):
             print("\nPipeline cancelled.", file=sys.stderr)
             sys.exit(0)
-        # Extract final assistant text from messages
         updated = False
         for msg in reversed(messages):
             if msg["role"] == "assistant" and msg.get("content"):
@@ -144,7 +146,6 @@ def run_pipeline(steps: list[StepConfig], command: str) -> None:
         if "STOP" in current_input:
             print("Nothing to do.", file=sys.stderr)
             return
-        # Loop-back check
         loop_on = step.get("loop_on")
         loop_to = step.get("loop_to")
         max_loops = step.get("max_loops")

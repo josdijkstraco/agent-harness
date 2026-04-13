@@ -113,12 +113,8 @@ def test_main_workflow_subcommand(monkeypatch):
         )
 
 
-def test_run_pipeline_appends_step_prompt(monkeypatch):
-    """Step prompt is prepended to current_input with double newline separator."""
-    from unittest.mock import patch
-    from harness import run_pipeline
-
-    agent_config = {
+def _agent_config():
+    return {
         "prompt": "System prompt",
         "tools": [],
         "tool_names": [],
@@ -127,6 +123,12 @@ def test_run_pipeline_appends_step_prompt(monkeypatch):
         "model": None,
     }
 
+
+def test_run_pipeline_appends_step_prompt(monkeypatch):
+    """Step prompt is prepended to current_input with double newline separator."""
+    from unittest.mock import patch
+    from harness import run_pipeline
+
     captured_inputs = []
 
     def fake_agent_loop(user_message, messages, **kwargs):
@@ -134,7 +136,7 @@ def test_run_pipeline_appends_step_prompt(monkeypatch):
         messages.append({"role": "assistant", "content": "output"})
         return {}
 
-    with patch("harness.load_agent", return_value=agent_config), \
+    with patch("harness.load_agent", return_value=_agent_config()), \
          patch("harness.agent_loop", side_effect=fake_agent_loop), \
          patch("harness.build_mcp_clients", return_value=[]):
         run_pipeline([{"name": "agent1", "prompt": "Extra guidance"}], "Initial command")
@@ -147,11 +149,6 @@ def test_run_pipeline_stops_on_stop_signal(monkeypatch, capsys):
     from unittest.mock import patch
     from harness import run_pipeline
 
-    agent_config = {
-        "prompt": "System prompt",
-        "tools": [], "tool_names": [], "skill_names": [], "mcp_names": [], "model": None,
-    }
-
     call_count = 0
 
     def fake_agent_loop(user_message, messages, **kwargs):
@@ -160,7 +157,7 @@ def test_run_pipeline_stops_on_stop_signal(monkeypatch, capsys):
         messages.append({"role": "assistant", "content": "Nothing needed here. STOP"})
         return {}
 
-    with patch("harness.load_agent", return_value=agent_config), \
+    with patch("harness.load_agent", return_value=_agent_config()), \
          patch("harness.agent_loop", side_effect=fake_agent_loop), \
          patch("harness.build_mcp_clients", return_value=[]):
         run_pipeline(
@@ -178,15 +175,6 @@ def test_run_pipeline_no_step_prompt_passes_input_unchanged(monkeypatch):
     from unittest.mock import patch
     from harness import run_pipeline
 
-    agent_config = {
-        "prompt": "System prompt",
-        "tools": [],
-        "tool_names": [],
-        "skill_names": [],
-        "mcp_names": [],
-        "model": None,
-    }
-
     captured_inputs = []
 
     def fake_agent_loop(user_message, messages, **kwargs):
@@ -194,7 +182,7 @@ def test_run_pipeline_no_step_prompt_passes_input_unchanged(monkeypatch):
         messages.append({"role": "assistant", "content": "output"})
         return {}
 
-    with patch("harness.load_agent", return_value=agent_config), \
+    with patch("harness.load_agent", return_value=_agent_config()), \
          patch("harness.agent_loop", side_effect=fake_agent_loop), \
          patch("harness.build_mcp_clients", return_value=[]):
         run_pipeline([{"name": "agent1", "prompt": None}], "Initial command")
@@ -279,16 +267,6 @@ def test_load_workflow_loop_to_forward_reference_raises(tmp_path):
 
 # --- Loop-back: run_pipeline tests ---
 
-def _agent_config():
-    return {
-        "prompt": "System prompt",
-        "tools": [],
-        "tool_names": [],
-        "skill_names": [],
-        "mcp_names": [],
-        "model": None,
-    }
-
 
 def test_run_pipeline_loops_back_on_keyword():
     """Reviewer outputs UNAPPROVED once then clean; pipeline runs implementer twice."""
@@ -306,13 +284,8 @@ def test_run_pipeline_loops_back_on_keyword():
         return _agent_config()
 
     def fake_agent_loop(user_message, messages, **kwargs):
-        # Determine which agent is running from the call log length
-        # We need to know the step name - use a side channel via messages[0]["content"]
-        # Actually we don't have direct access to step name here. Use a closure counter.
-        # The order is: implementer, reviewer(UNAPPROVED), implementer, reviewer(clean)
         call_log.append(user_message)
         call_index = len(call_log) - 1
-        # call 0: implementer, call 1: reviewer(UNAPPROVED), call 2: implementer, call 3: reviewer(clean)
         sequence = ["implementer", "reviewer", "implementer", "reviewer"]
         agent = sequence[call_index]
         output = outputs[agent][counters[agent]]
