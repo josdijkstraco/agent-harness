@@ -136,7 +136,7 @@ def run_pipeline(steps: list[StepConfig], command: str) -> None:
         updated = False
         for msg in reversed(messages):
             if msg["role"] == "assistant" and msg.get("content"):
-                current_input = msg["content"]
+                current_input = current_input + "\n\n---\n\n" + msg["content"]
                 updated = True
                 break
         if not updated:

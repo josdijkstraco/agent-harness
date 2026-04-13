@@ -19,3 +19,6 @@ steps:
     loop_on: REJECTED
     loop_to: implementer
     max_loops: 3
+  - name: linear
+    prompt: |
+      Move the card to the 'done' column.
