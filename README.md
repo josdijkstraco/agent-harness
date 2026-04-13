@@ -1,4 +1,4 @@
-# coding-harness
+# agent-harness
 
 A multi-agent coding harness that orchestrates Claude-powered agents in configurable pipelines. Define agents and workflows in YAML, chain them together, and run tasks through specialist pipelines.
 

@@ -54,18 +54,15 @@ def load_workflow(name: str, workflows_dir: Path = _HERE / "workflows") -> list[
                 raw_inputs = step.get("inputs")
                 inputs: list[str] | None = list(raw_inputs) if raw_inputs else None
                 if (loop_on is None) != (loop_to is None):
-                    print(f"Error: step '{step_name}' must have both loop_on and loop_to, or neither.", file=sys.stderr)
-                    sys.exit(1)
+                    raise ValueError(f"Step '{step_name}' must have both loop_on and loop_to, or neither.")
                 if loop_to is not None and loop_to not in seen_names:
-                    print(f"Error: step '{step_name}' loop_to='{loop_to}' must refer to an earlier step.", file=sys.stderr)
-                    sys.exit(1)
+                    raise ValueError(f"Step '{step_name}' loop_to='{loop_to}' must refer to an earlier step.")
                 if loop_on is not None and max_loops is None:
                     max_loops = 3
                 if inputs is not None:
                     for ref in inputs:
                         if ref != "__input__" and ref not in seen_ids:
-                            print(f"Error: step '{step_name}' inputs references unknown id '{ref}'.", file=sys.stderr)
-                            sys.exit(1)
+                            raise ValueError(f"Step '{step_name}' inputs references unknown id '{ref}'.")
                 steps.append({
                     "name": step_name,
                     "id": step_id,
@@ -79,8 +76,7 @@ def load_workflow(name: str, workflows_dir: Path = _HERE / "workflows") -> list[
                 if step_id:
                     seen_ids.add(step_id)
             return steps
-    print(f"Error: no workflow named '{name}' found in {workflows_dir}/", file=sys.stderr)
-    sys.exit(1)
+    raise ValueError(f"No workflow named '{name}' found in {workflows_dir}/")
 
 
 def load_agent(name: str, agents_dir: Path = _HERE / "agents") -> AgentConfig:
@@ -96,8 +92,7 @@ def load_agent(name: str, agents_dir: Path = _HERE / "agents") -> AgentConfig:
             tools = []
             for tool_name in tool_names:
                 if tool_name not in _TOOL_MAP:
-                    print(f"Error: agent '{name}' references unknown tool '{tool_name}'", file=sys.stderr)
-                    sys.exit(1)
+                    raise ValueError(f"Agent '{name}' references unknown tool '{tool_name}'")
                 tools.append(_TOOL_MAP[tool_name])
             raw_skills = data.get("skills", [])
             skill_names = [s["name"] if isinstance(s, dict) else s for s in raw_skills]
@@ -106,8 +101,7 @@ def load_agent(name: str, agents_dir: Path = _HERE / "agents") -> AgentConfig:
             mcp_names = [m["name"] if isinstance(m, dict) else m for m in raw_mcp]
             for mcp_name in mcp_names:
                 if mcp_name not in _MCP_CONFIG:
-                    print(f"Error: agent '{name}' references unknown MCP server '{mcp_name}'", file=sys.stderr)
-                    sys.exit(1)
+                    raise ValueError(f"Agent '{name}' references unknown MCP server '{mcp_name}'")
             return {
                 "prompt": prompt,
                 "tools": tools,
@@ -116,8 +110,7 @@ def load_agent(name: str, agents_dir: Path = _HERE / "agents") -> AgentConfig:
                 "skill_names": skill_names,
                 "mcp_names": mcp_names,
             }
-    print(f"Error: no agent named '{name}' found in {agents_dir}/", file=sys.stderr)
-    sys.exit(1)
+    raise ValueError(f"No agent named '{name}' found in {agents_dir}/")
 
 
 def run_pipeline(steps: list[StepConfig], command: str) -> None:
@@ -219,11 +212,15 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    if args.subcommand == "workflow":
-        step_names = load_workflow(args.name)
-        run_pipeline(step_names, args.prompt)
-    else:
-        parser.error(f"Unknown subcommand: {args.subcommand}")
+    try:
+        if args.subcommand == "workflow":
+            step_names = load_workflow(args.name)
+            run_pipeline(step_names, args.prompt)
+        else:
+            parser.error(f"Unknown subcommand: {args.subcommand}")
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
