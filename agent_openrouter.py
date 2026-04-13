@@ -129,6 +129,8 @@ def agent_loop(
             usage: dict = {}
 
             for chunk in call_api_streaming(messages, active_tools, model, cancel_event):
+                if not chunk.get("choices"):
+                    continue
                 choice = chunk["choices"][0]
                 finish_reason = choice.get("finish_reason") or finish_reason
                 delta = choice.get("delta", {})

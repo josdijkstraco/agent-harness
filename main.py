@@ -13,8 +13,6 @@ from dotenv import load_dotenv
 from prompt_toolkit import prompt as pt_prompt
 from prompt_toolkit.completion import WordCompleter
 
-from logo import print_logo
-
 load_dotenv()
 
 API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -88,7 +86,6 @@ def main() -> None:
     parser.parse_args()
 
     if sys.stdout.isatty():
-        print_logo()
         print()
 
     mcp_clients = build_all_mcp_clients()

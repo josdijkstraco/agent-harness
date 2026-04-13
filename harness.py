@@ -9,11 +9,12 @@ from typing import NotRequired, TypedDict
 import yaml
 
 from agent_openrouter import MODEL as DEFAULT_MODEL, agent_loop
-from mcp_client import build_mcp_clients
+from mcp_client import build_mcp_clients, load_mcp_config
 from skills_loader import append_skills
 from tools import ALL_TOOLS, Tool
 
 _TOOL_MAP = {t.name: t for t in ALL_TOOLS}
+_MCP_CONFIG = load_mcp_config()
 _HERE = Path(__file__).parent
 
 
@@ -28,7 +29,9 @@ class AgentConfig(TypedDict):
 
 class StepConfig(TypedDict):
     name: str
+    id: NotRequired[str | None]
     prompt: str | None
+    inputs: NotRequired[list[str] | None]
     loop_on: NotRequired[str | None]
     loop_to: NotRequired[str | None]
     max_loops: NotRequired[int | None]
@@ -41,11 +44,15 @@ def load_workflow(name: str, workflows_dir: Path = _HERE / "workflows") -> list[
         if data.get("name") == name:
             steps: list[StepConfig] = []
             seen_names: set[str] = set()
+            seen_ids: set[str] = set()
             for step in data.get("steps", []):
                 step_name = step["name"]
+                step_id = step.get("id") or None
                 loop_on = step.get("loop_on") or None
                 loop_to = step.get("loop_to") or None
                 max_loops = step.get("max_loops")
+                raw_inputs = step.get("inputs")
+                inputs: list[str] | None = list(raw_inputs) if raw_inputs else None
                 if (loop_on is None) != (loop_to is None):
                     print(f"Error: step '{step_name}' must have both loop_on and loop_to, or neither.", file=sys.stderr)
                     sys.exit(1)
@@ -54,14 +61,23 @@ def load_workflow(name: str, workflows_dir: Path = _HERE / "workflows") -> list[
                     sys.exit(1)
                 if loop_on is not None and max_loops is None:
                     max_loops = 3
+                if inputs is not None:
+                    for ref in inputs:
+                        if ref != "__input__" and ref not in seen_ids:
+                            print(f"Error: step '{step_name}' inputs references unknown id '{ref}'.", file=sys.stderr)
+                            sys.exit(1)
                 steps.append({
                     "name": step_name,
+                    "id": step_id,
                     "prompt": step.get("prompt") or None,
+                    "inputs": inputs,
                     "loop_on": loop_on,
                     "loop_to": loop_to,
                     "max_loops": max_loops,
                 })
                 seen_names.add(step_name)
+                if step_id:
+                    seen_ids.add(step_id)
             return steps
     print(f"Error: no workflow named '{name}' found in {workflows_dir}/", file=sys.stderr)
     sys.exit(1)
@@ -88,6 +104,10 @@ def load_agent(name: str, agents_dir: Path = _HERE / "agents") -> AgentConfig:
             prompt = append_skills(data.get("prompt", ""), skill_names)
             raw_mcp = data.get("mcp", [])
             mcp_names = [m["name"] if isinstance(m, dict) else m for m in raw_mcp]
+            for mcp_name in mcp_names:
+                if mcp_name not in _MCP_CONFIG:
+                    print(f"Error: agent '{name}' references unknown MCP server '{mcp_name}'", file=sys.stderr)
+                    sys.exit(1)
             return {
                 "prompt": prompt,
                 "tools": tools,
@@ -105,7 +125,9 @@ def run_pipeline(steps: list[StepConfig], command: str) -> None:
     step_index_map: dict[str, int] = {s["name"]: i for i, s in enumerate(steps)}
     agent_cache: dict[str, AgentConfig] = {}
     loop_counts: dict[str, int] = {}
-    current_input = command
+    # Outputs keyed by step id; "__input__" holds the original command.
+    step_outputs: dict[str, str] = {"__input__": command}
+    last_output: str = command
     step_index = 0
     total_input_tokens = 0
     total_output_tokens = 0
@@ -114,7 +136,17 @@ def run_pipeline(steps: list[StepConfig], command: str) -> None:
     while step_index < len(steps):
         step = steps[step_index]
         step_name = step["name"]
+        step_id = step.get("id")
         step_prompt = step.get("prompt")
+        input_ids = step.get("inputs")
+
+        # Determine what to feed this step.
+        if input_ids is not None:
+            parts = [step_outputs[ref] for ref in input_ids if ref in step_outputs]
+            current_input = "\n\n---\n\n".join(parts)
+        else:
+            current_input = last_output
+
         if step_name not in agent_cache:
             agent_cache[step_name] = load_agent(step_name)
         agent = agent_cache[step_name]
@@ -144,24 +176,26 @@ def run_pipeline(steps: list[StepConfig], command: str) -> None:
         if usage.get("cancelled"):
             print("\nPipeline cancelled.", file=sys.stderr)
             sys.exit(0)
-        updated = False
+        step_output: str | None = None
         for msg in reversed(messages):
             if msg["role"] == "assistant" and msg.get("content"):
-                current_input = current_input + "\n\n---\n\n" + msg["content"]
-                updated = True
+                step_output = msg["content"]
                 break
-        if not updated:
+        if step_output is None:
             print(f"Warning: agent '{step_name}' produced no text output; passing previous input forward.", file=sys.stderr)
             step_index += 1
             continue
-        if "STOP" in current_input:
+        last_output = step_output
+        if step_id:
+            step_outputs[step_id] = step_output
+        if "STOP" in step_output:
             print("Nothing to do.", file=sys.stderr)
             print(f"\n[total usage]  in={total_input_tokens:,}  out={total_output_tokens:,}  cost=${total_cost:.4f}")
             return
         loop_on = step.get("loop_on")
         loop_to = step.get("loop_to")
         max_loops = step.get("max_loops")
-        if loop_on and loop_to and loop_on in current_input:
+        if loop_on and loop_to and loop_on in step_output:
             count = loop_counts.get(step_name, 0)
             if count < max_loops:
                 loop_counts[step_name] = count + 1

@@ -2,6 +2,7 @@ name: pick-and-fix
 description: Pick a card and fix it.
 steps:
   - name: linear
+    id: card
     prompt: |
       Pick a card from the 'Agent Harness' project that is in the 'todo' column
       and move it to the 'in progress' column. Your final response needs to include
@@ -10,6 +11,7 @@ steps:
     prompt: |
       Plan the fix for the request.
   - name: implementer
+    id: implementer
     prompt: |
       Implement the fix.
   - name: reviewer
@@ -19,6 +21,11 @@ steps:
     loop_on: REJECTED
     loop_to: implementer
     max_loops: 3
+  - name: github
+    prompt: |
+      Create a pull request for the fix. Create a summary of the changes for this pull request.
+    inputs: [implementer]
   - name: linear
     prompt: |
       Move the card to the 'done' column.
+    inputs: [card]
