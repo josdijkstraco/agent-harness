@@ -112,6 +112,7 @@ def agent_loop(
     tools: list | None = None,
     trace: object | None = None,
     step_label: str | None = None,
+    submit_result_schema: dict | None = None,
 ) -> dict:
     initial_len = len(messages)
     messages.append({"role": "user", "content": user_message})
@@ -121,6 +122,8 @@ def agent_loop(
     active_tools = [_to_openai_tool(t) for t in active_tool_list]
     for client in (mcp_clients or []):
         active_tools.extend(client.tools)
+    if submit_result_schema is not None:
+        active_tools.append(submit_result_schema)
 
     total_input = 0
     total_output = 0
@@ -195,6 +198,7 @@ def agent_loop(
 
             if finish_reason == "tool_calls" and tool_calls:
                 tool_results = []
+                structured_result = None
                 for tool_call in tool_calls:
                     name = tool_call["function"]["name"]
                     raw_args = tool_call["function"]["arguments"]
@@ -207,6 +211,15 @@ def agent_loop(
                             "role": "tool",
                             "tool_call_id": tool_call["id"],
                             "content": f"[AGENT_ERROR] Failed to parse tool arguments for '{name}': {e}",
+                        })
+                        continue
+                    if name == "submit_result" and submit_result_schema is not None:
+                        print(f"  [submit_result] {params}")
+                        structured_result = params
+                        tool_results.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call["id"],
+                            "content": "Result accepted.",
                         })
                         continue
                     params_str = str(params)
@@ -227,6 +240,8 @@ def agent_loop(
                         "content": result,
                     })
                 messages.extend(tool_results)
+                if structured_result is not None:
+                    return {"input_tokens": total_input, "output_tokens": total_output, "cost": total_cost, "result": structured_result}
 
     except RequestCancelled:
         del messages[initial_len:]

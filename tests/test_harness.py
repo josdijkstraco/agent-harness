@@ -1065,3 +1065,69 @@ def test_load_workflow_loop_on_with_schema_valid(tmp_path):
     assert steps[1]["response_schema"] is not None
 
 
+# --- Structured outputs: agent_loop interception tests ---
+
+
+def test_agent_loop_intercepts_submit_result():
+    """agent_loop returns structured result when submit_result tool is called."""
+    from unittest.mock import patch
+    from agent_openrouter import agent_loop
+    from harness import build_submit_result_tool
+
+    schema = {
+        "decision": {"type": "string", "enum": ["APPROVED", "REJECTED"]},
+        "feedback": {"type": "string"},
+    }
+    submit_tool = build_submit_result_tool(schema)
+
+    chunks = [
+        {
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call_123",
+                        "function": {
+                            "name": "submit_result",
+                            "arguments": '{"decision": "REJECTED", "feedback": "needs tests"}'
+                        }
+                    }]
+                }
+            }],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 50, "cost": 0.01}
+        },
+    ]
+
+    with patch("agent_openrouter.call_api_streaming", return_value=iter(chunks)):
+        messages = [{"role": "system", "content": "You are a reviewer."}]
+        usage = agent_loop("Review this", messages, submit_result_schema=submit_tool)
+
+    assert usage["result"] == {"decision": "REJECTED", "feedback": "needs tests"}
+    assert usage["input_tokens"] == 100
+    assert usage["output_tokens"] == 50
+
+
+def test_agent_loop_without_submit_result_schema_works_unchanged():
+    """agent_loop without submit_result_schema works exactly as before."""
+    from unittest.mock import patch
+    from agent_openrouter import agent_loop
+
+    chunks = [
+        {
+            "choices": [{
+                "finish_reason": "stop",
+                "delta": {"content": "Looks good. APPROVED"}
+            }],
+            "usage": {"prompt_tokens": 50, "completion_tokens": 20, "cost": 0.005}
+        },
+    ]
+
+    with patch("agent_openrouter.call_api_streaming", return_value=iter(chunks)):
+        messages = [{"role": "system", "content": "You are a reviewer."}]
+        usage = agent_loop("Review this", messages)
+
+    assert "result" not in usage
+    assert usage["input_tokens"] == 50
+
+
