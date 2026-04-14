@@ -24,3 +24,6 @@ htmlcov/
 # ENV
 .env
 .worktrees
+
+# Traces
+traces/
