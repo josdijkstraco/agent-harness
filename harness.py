@@ -3,14 +3,17 @@
 
 import argparse
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import NotRequired, TypedDict
 
 import yaml
+from prompt_toolkit import prompt as pt_prompt
 
-from agent_openrouter import MODEL as DEFAULT_MODEL, agent_loop
+from agent_openrouter import AVAILABLE_MODELS, MODEL as DEFAULT_MODEL, agent_loop
 from mcp_client import build_mcp_clients, load_mcp_config
+from repl_utils import COMMAND_COMPLETER, IS_TTY, status_text, watch_for_escape
 from skills_loader import append_skills
 from tools import ALL_TOOLS, Tool
 
@@ -286,14 +289,195 @@ def _replay(trace_id: str, from_step: int, traces_dir: str, workflows_dir: str) 
     run_pipeline(remaining_steps, t.command, traces_dir=traces_dir, workflow_name=t.workflow)
 
 
+def _run_agent_oneshot(name: str, prompt: str, model_override: str | None = None) -> None:
+    """Run a single agent with one prompt, print output, and exit."""
+    agent = load_agent(name)
+    model = model_override or agent["model"] or DEFAULT_MODEL
+    mcp_names = agent["mcp_names"]
+    mcp_clients = build_mcp_clients(mcp_names) if mcp_names else []
+    tools_str = ", ".join(agent["tool_names"]) or "none"
+    skills_str = ", ".join(agent["skill_names"]) or "none"
+    mcp_str = ", ".join(mcp_names) or "none"
+    print(f"[agent: {name}]  model: {model}  tools: {tools_str}  skills: {skills_str}  mcp: {mcp_str}")
+
+    messages: list = [{"role": "system", "content": agent["prompt"]}]
+    try:
+        usage = agent_loop(prompt, messages, model=model, tools=agent["tools"], mcp_clients=mcp_clients)
+    finally:
+        for client in mcp_clients:
+            client.close()
+
+    in_tok = usage.get("input_tokens", 0)
+    out_tok = usage.get("output_tokens", 0)
+    cost = usage.get("cost", 0.0)
+    print(f"\n[usage]  in={in_tok:,}  out={out_tok:,}  cost=${cost:.4f}")
+
+
+def _select_model(current: str) -> str:
+    """Prompt the user to pick a model."""
+    print("Available models:")
+    for i, m in enumerate(AVAILABLE_MODELS, 1):
+        marker = " *" if m == current else ""
+        print(f"  {i}. {m}{marker}")
+    try:
+        choice = input("Pick a number (or press Enter to keep current): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return current
+    if not choice:
+        return current
+    try:
+        idx = int(choice) - 1
+        if 0 <= idx < len(AVAILABLE_MODELS):
+            selected = AVAILABLE_MODELS[idx]
+            print(f"Model set to: {selected}")
+            return selected
+        print("Invalid selection, keeping current model.")
+    except ValueError:
+        print("Invalid input, keeping current model.")
+    return current
+
+
+def _run_agent_repl(name: str, model_override: str | None = None) -> None:
+    """Run a single agent in interactive REPL mode."""
+    agent = load_agent(name)
+    model = model_override or agent["model"] or DEFAULT_MODEL
+    mcp_names = agent["mcp_names"]
+    mcp_clients = build_mcp_clients(mcp_names) if mcp_names else []
+    tools_str = ", ".join(agent["tool_names"]) or "none"
+    skills_str = ", ".join(agent["skill_names"]) or "none"
+    mcp_str = ", ".join(mcp_names) or "none"
+    print(f"[agent: {name}]  model: {model}  tools: {tools_str}  skills: {skills_str}  mcp: {mcp_str}")
+    print("Interactive mode (type 'exit' to quit, '/model' to switch, '/clear' to reset)")
+
+    messages: list = [{"role": "system", "content": agent["prompt"]}]
+    current_model = model
+    session_in = 0
+    session_out = 0
+    session_cost = 0.0
+    turns = 0
+
+    try:
+        while True:
+            try:
+                if IS_TTY:
+                    import warnings
+                    def _toolbar() -> str:
+                        return status_text(current_model, session_in, session_out, turns, session_cost)
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings("ignore", message=".*CPR.*")
+                        user_input = pt_prompt(f"{name}> ", completer=COMMAND_COMPLETER, bottom_toolbar=_toolbar, refresh_interval=0.5)
+                else:
+                    user_input = input(f"{name}> ")
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+            if user_input.strip().lower() in ("exit", "quit"):
+                break
+            if user_input.strip() == "/model":
+                current_model = _select_model(current_model)
+                continue
+            if user_input.strip() == "/clear":
+                messages.clear()
+                messages.append({"role": "system", "content": agent["prompt"]})
+                session_in = 0
+                session_out = 0
+                session_cost = 0.0
+                turns = 0
+                print("History cleared.")
+                continue
+            if not user_input.strip():
+                continue
+
+            cancel_event = threading.Event()
+            done_event = threading.Event()
+            result: dict = {}
+
+            def _run() -> None:
+                result["usage"] = agent_loop(
+                    user_input, messages, model=current_model,
+                    cancel_event=cancel_event, mcp_clients=mcp_clients,
+                    tools=agent["tools"],
+                )
+
+            agent_thread = threading.Thread(target=_run, daemon=True)
+            watcher_thread = threading.Thread(target=watch_for_escape, args=(cancel_event, done_event), daemon=True)
+            watcher_thread.start()
+            agent_thread.start()
+            try:
+                agent_thread.join()
+            except KeyboardInterrupt:
+                cancel_event.set()
+                agent_thread.join()
+            finally:
+                done_event.set()
+
+            usage = result.get("usage", {"input_tokens": 0, "output_tokens": 0, "cancelled": True})
+            if usage.get("cancelled"):
+                print("\nRequest interrupted.")
+            else:
+                session_in += usage["input_tokens"]
+                session_out += usage["output_tokens"]
+                session_cost += usage.get("cost", 0.0)
+                turns = (len(messages) - 1) // 2
+    finally:
+        for client in mcp_clients:
+            client.close()
+
+
+def dry_run_pipeline(workflow_name: str, steps: list[StepConfig]) -> None:
+    """Print resolved pipeline config without making any API calls."""
+    print(f"\n  Pipeline: {workflow_name} ({len(steps)} steps)\n")
+    for i, step in enumerate(steps):
+        agent = load_agent(step["name"])
+        print(f"    {i + 1}. {step['name']}")
+
+        model = agent["model"] or DEFAULT_MODEL
+        print(f"       model: {model}")
+
+        tools = ", ".join(agent["tool_names"]) if agent["tool_names"] else "none"
+        print(f"       tools: {tools}")
+
+        if agent["skill_names"]:
+            print(f"       skills: {', '.join(agent['skill_names'])}")
+
+        if agent["mcp_names"]:
+            print(f"       mcp: {', '.join(agent['mcp_names'])}")
+        else:
+            print(f"       mcp: none")
+
+        inputs = step.get("inputs")
+        if inputs:
+            print(f"       inputs: {', '.join(inputs)}")
+        elif i == 0:
+            print(f"       inputs: __input__")
+        else:
+            print(f"       inputs: previous step output")
+
+        loop_on = step.get("loop_on")
+        loop_to = step.get("loop_to")
+        if loop_on and loop_to:
+            max_loops = step.get("max_loops") or 3
+            print(f"       loop: {loop_on} \u2192 {loop_to} (max {max_loops})")
+
+        print()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run agent pipelines")
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
 
+    # agent subcommand
+    ag = subparsers.add_parser("agent", help="Run a single agent interactively or one-shot")
+    ag.add_argument("name", help="agent name (matches name: field in agents/*.yaml)")
+    ag.add_argument("prompt", nargs="?", help="one-shot prompt (omit for interactive REPL)")
+    ag.add_argument("--model", help="override the agent's default model")
+
     # workflow subcommand
     wf = subparsers.add_parser("workflow", help="Run a workflow with an ad-hoc prompt")
     wf.add_argument("name", help="workflow name")
-    wf.add_argument("prompt", help="initial prompt to send to the first agent")
+    wf.add_argument("prompt", nargs="?", help="initial prompt to send to the first agent")
+    wf.add_argument("--dry-run", action="store_true", help="print resolved pipeline config without running")
 
     # trace subcommand
     tr = subparsers.add_parser("trace", help="Inspect traces")
@@ -316,9 +500,19 @@ def main() -> None:
     args = parser.parse_args()
 
     try:
-        if args.subcommand == "workflow":
-            step_names = load_workflow(args.name)
-            run_pipeline(step_names, args.prompt, workflow_name=args.name)
+        if args.subcommand == "agent":
+            if args.prompt:
+                _run_agent_oneshot(args.name, args.prompt, model_override=args.model)
+            else:
+                _run_agent_repl(args.name, model_override=args.model)
+        elif args.subcommand == "workflow":
+            step_configs = load_workflow(args.name)
+            if args.dry_run:
+                dry_run_pipeline(args.name, step_configs)
+            else:
+                if not args.prompt:
+                    parser.error("prompt is required unless --dry-run is set")
+                run_pipeline(step_configs, args.prompt, workflow_name=args.name)
         elif args.subcommand == "trace":
             if args.trace_action == "list":
                 _trace_list(args.traces_dir)
