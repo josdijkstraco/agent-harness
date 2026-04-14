@@ -1131,3 +1131,157 @@ def test_agent_loop_without_submit_result_schema_works_unchanged():
     assert usage["input_tokens"] == 50
 
 
+# --- Structured outputs: run_pipeline control flow tests ---
+
+
+def test_run_pipeline_stop_on_structured_result(tmp_path):
+    """Pipeline exits early when stop_on condition matches structured result."""
+    from unittest.mock import patch
+    from harness import run_pipeline
+
+    call_count = [0]
+
+    def fake_agent_loop(user_message, messages, **kwargs):
+        call_count[0] += 1
+        messages.append({"role": "assistant", "content": "No cards found."})
+        return {"result": {"status": "STOP", "context": ""}}
+
+    steps = [
+        {"name": "agent1", "prompt": None, "response_schema": {"status": {"type": "string", "enum": ["FOUND", "STOP"]}, "context": {"type": "string"}}, "stop_on": "status == STOP"},
+        {"name": "agent2", "prompt": None},
+    ]
+
+    with patch("harness.load_agent", return_value=_agent_config()), \
+         patch("harness.agent_loop", side_effect=fake_agent_loop), \
+         patch("harness.build_mcp_clients", return_value=[]):
+        run_pipeline(steps, "Do the thing", traces_dir=tmp_path)
+
+    assert call_count[0] == 1
+
+
+def test_run_pipeline_loop_on_structured_result(tmp_path):
+    """Pipeline loops back when loop_on condition matches structured result."""
+    from unittest.mock import patch
+    from harness import run_pipeline
+
+    call_log = []
+    call_count = [0]
+
+    def fake_load_agent(name, **kwargs):
+        return _agent_config()
+
+    def fake_agent_loop(user_message, messages, **kwargs):
+        call_count[0] += 1
+        call_log.append(call_count[0])
+        if call_count[0] == 1:
+            messages.append({"role": "assistant", "content": "impl v1"})
+            return {}
+        elif call_count[0] == 2:
+            messages.append({"role": "assistant", "content": "Needs work."})
+            return {"result": {"decision": "REJECTED", "feedback": "missing tests"}}
+        elif call_count[0] == 3:
+            messages.append({"role": "assistant", "content": "impl v2"})
+            return {}
+        else:
+            messages.append({"role": "assistant", "content": "Looks good."})
+            return {"result": {"decision": "APPROVED", "feedback": "all good"}}
+
+    steps = [
+        {"name": "implementer", "prompt": None},
+        {"name": "reviewer", "prompt": None,
+         "response_schema": {"decision": {"type": "string", "enum": ["APPROVED", "REJECTED"]}, "feedback": {"type": "string"}},
+         "loop_on": "decision == REJECTED", "loop_to": "implementer", "max_loops": 3},
+    ]
+
+    with patch("harness.load_agent", side_effect=fake_load_agent), \
+         patch("harness.agent_loop", side_effect=fake_agent_loop), \
+         patch("harness.build_mcp_clients", return_value=[]):
+        run_pipeline(steps, "Fix the bug", traces_dir=tmp_path)
+
+    assert call_count[0] == 4
+
+
+def test_run_pipeline_structured_no_loop_when_condition_not_met(tmp_path):
+    """Pipeline does not loop when structured result does not match loop_on."""
+    from unittest.mock import patch
+    from harness import run_pipeline
+
+    call_count = [0]
+
+    def fake_load_agent(name, **kwargs):
+        return _agent_config()
+
+    def fake_agent_loop(user_message, messages, **kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            messages.append({"role": "assistant", "content": "impl done"})
+            return {}
+        else:
+            messages.append({"role": "assistant", "content": "Approved."})
+            return {"result": {"decision": "APPROVED", "feedback": "great"}}
+
+    steps = [
+        {"name": "implementer", "prompt": None},
+        {"name": "reviewer", "prompt": None,
+         "response_schema": {"decision": {"type": "string", "enum": ["APPROVED", "REJECTED"]}, "feedback": {"type": "string"}},
+         "loop_on": "decision == REJECTED", "loop_to": "implementer", "max_loops": 3},
+    ]
+
+    with patch("harness.load_agent", side_effect=fake_load_agent), \
+         patch("harness.agent_loop", side_effect=fake_agent_loop), \
+         patch("harness.build_mcp_clients", return_value=[]):
+        run_pipeline(steps, "Fix the bug", traces_dir=tmp_path)
+
+    assert call_count[0] == 2
+
+
+def test_run_pipeline_passes_submit_result_schema_to_agent_loop(tmp_path):
+    """run_pipeline passes the submit_result_schema to agent_loop when step has response_schema."""
+    from unittest.mock import patch
+    from harness import run_pipeline
+
+    captured_kwargs = []
+
+    def fake_agent_loop(user_message, messages, **kwargs):
+        captured_kwargs.append(kwargs)
+        messages.append({"role": "assistant", "content": "done"})
+        return {"result": {"status": "FOUND", "context": "card info"}}
+
+    steps = [
+        {"name": "agent1", "prompt": None,
+         "response_schema": {"status": {"type": "string"}, "context": {"type": "string"}}},
+    ]
+
+    with patch("harness.load_agent", return_value=_agent_config()), \
+         patch("harness.agent_loop", side_effect=fake_agent_loop), \
+         patch("harness.build_mcp_clients", return_value=[]):
+        run_pipeline(steps, "Do the thing", traces_dir=tmp_path)
+
+    assert "submit_result_schema" in captured_kwargs[0]
+    assert captured_kwargs[0]["submit_result_schema"]["function"]["name"] == "submit_result"
+
+
+def test_run_pipeline_no_schema_no_submit_result_kwarg(tmp_path):
+    """run_pipeline passes submit_result_schema=None when step has no response_schema."""
+    from unittest.mock import patch
+    from harness import run_pipeline
+
+    captured_kwargs = []
+
+    def fake_agent_loop(user_message, messages, **kwargs):
+        captured_kwargs.append(kwargs)
+        messages.append({"role": "assistant", "content": "done"})
+        return {}
+
+    steps = [
+        {"name": "agent1", "prompt": None},
+    ]
+
+    with patch("harness.load_agent", return_value=_agent_config()), \
+         patch("harness.agent_loop", side_effect=fake_agent_loop), \
+         patch("harness.build_mcp_clients", return_value=[]):
+        run_pipeline(steps, "Do the thing", traces_dir=tmp_path)
+
+    assert captured_kwargs[0].get("submit_result_schema") is None
+
+

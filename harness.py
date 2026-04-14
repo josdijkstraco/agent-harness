@@ -286,9 +286,12 @@ def run_pipeline(steps: list[StepConfig], command: str, traces_dir: str | Path =
                           tools=agent["tool_names"], prompt_preview=_preview(effective_input))
                 step_start_time = time.time()
 
+                response_schema = step.get("response_schema")
+                submit_schema = build_submit_result_tool(response_schema) if response_schema else None
                 try:
                     usage = agent_loop(effective_input, messages, model=model, tools=agent["tools"],
-                                       mcp_clients=mcp_clients, trace=trace, step_label=step_label)
+                                       mcp_clients=mcp_clients, trace=trace, step_label=step_label,
+                                       submit_result_schema=submit_schema)
                 finally:
                     for client in mcp_clients:
                         client.close()
@@ -328,7 +331,14 @@ def run_pipeline(steps: list[StepConfig], command: str, traces_dir: str | Path =
                           duration=time.time() - step_start_time, cost=cost)
                 trace.save_snapshot(step_index, step_name, messages, traces_dir=traces_dir)
 
-                if "STOP" in step_output:
+                structured_result = usage.get("result")
+                stop_on = step.get("stop_on")
+                if stop_on and structured_result and eval_condition(stop_on, structured_result):
+                    print("Nothing to do.", file=sys.stderr)
+                    print(f"\n[total usage]  in={total_input_tokens:,}  out={total_output_tokens:,}  cost=${total_cost:.4f}")
+                    trace.status = "completed"
+                    return
+                elif not stop_on and "STOP" in (step_output or ""):
                     print("Nothing to do.", file=sys.stderr)
                     print(f"\n[total usage]  in={total_input_tokens:,}  out={total_output_tokens:,}  cost=${total_cost:.4f}")
                     trace.status = "completed"
@@ -336,17 +346,23 @@ def run_pipeline(steps: list[StepConfig], command: str, traces_dir: str | Path =
                 loop_on = step.get("loop_on")
                 loop_to = step.get("loop_to")
                 max_loops = step.get("max_loops")
-                if loop_on and loop_to and loop_on in step_output:
-                    count = loop_counts.get(step_name, 0)
-                    if count < max_loops:
-                        loop_counts[step_name] = count + 1
-                        print(f"[loop] '{step_name}' triggered '{loop_on}' (loop {count + 1}/{max_loops}), jumping to '{loop_to}'", file=sys.stderr)
-                        trace.log(step=step_label, event="loop", loop_on=loop_on, loop_to=loop_to,
-                                  iteration=count + 1, max=max_loops)
-                        step_index = step_index_map[loop_to]
-                        continue
+                if loop_on and loop_to:
+                    loop_triggered = False
+                    if structured_result and response_schema:
+                        loop_triggered = eval_condition(loop_on, structured_result)
                     else:
-                        print(f"[loop] '{step_name}' hit max_loops={max_loops}; continuing to next step.", file=sys.stderr)
+                        loop_triggered = loop_on in (step_output or "")
+                    if loop_triggered:
+                        count = loop_counts.get(step_name, 0)
+                        if count < max_loops:
+                            loop_counts[step_name] = count + 1
+                            print(f"[loop] '{step_name}' triggered '{loop_on}' (loop {count + 1}/{max_loops}), jumping to '{loop_to}'", file=sys.stderr)
+                            trace.log(step=step_label, event="loop", loop_on=loop_on, loop_to=loop_to,
+                                      iteration=count + 1, max=max_loops)
+                            step_index = step_index_map[loop_to]
+                            continue
+                        else:
+                            print(f"[loop] '{step_name}' hit max_loops={max_loops}; continuing to next step.", file=sys.stderr)
                 step_index += 1
             except Exception:
                 print(f"\n[error: {step_name}] step failed", file=sys.stderr)
