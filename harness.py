@@ -179,6 +179,16 @@ def build_submit_result_tool(response_schema: dict) -> dict:
     }
 
 
+def eval_condition(expr: str, result: dict) -> bool:
+    """Evaluate a 'field == value' expression against a structured result dict."""
+    parts = expr.split("==", 1)
+    if len(parts) != 2:
+        return False
+    field = parts[0].strip()
+    value = parts[1].strip()
+    return str(result.get(field, "")) == value
+
+
 def run_pipeline(steps: list[StepConfig], command: str, traces_dir: str | Path = "traces", workflow_name: str = "pipeline") -> None:
     """Run command through each agent in sequence, chaining responses."""
     from trace import Trace, _preview

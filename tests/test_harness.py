@@ -896,3 +896,30 @@ def test_build_submit_result_tool_number_and_boolean():
     assert params["properties"]["approved"] == {"type": "boolean"}
 
 
+# --- Structured outputs: eval_condition tests ---
+
+
+def test_eval_condition_match():
+    """eval_condition returns True when field matches value."""
+    from harness import eval_condition
+    assert eval_condition("decision == REJECTED", {"decision": "REJECTED", "feedback": "bad"}) is True
+
+
+def test_eval_condition_no_match():
+    """eval_condition returns False when field does not match value."""
+    from harness import eval_condition
+    assert eval_condition("decision == REJECTED", {"decision": "APPROVED", "feedback": "good"}) is False
+
+
+def test_eval_condition_missing_field():
+    """eval_condition returns False when field is not in result."""
+    from harness import eval_condition
+    assert eval_condition("decision == REJECTED", {"feedback": "good"}) is False
+
+
+def test_eval_condition_whitespace_handling():
+    """eval_condition handles extra whitespace around field and value."""
+    from harness import eval_condition
+    assert eval_condition("  decision  ==  REJECTED  ", {"decision": "REJECTED"}) is True
+
+
