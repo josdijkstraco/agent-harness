@@ -14,8 +14,8 @@ def test_load_workflow_finds_by_name(tmp_path):
     from harness import load_workflow
     steps = load_workflow("mywf", workflows_dir=tmp_path)
     assert steps == [
-        {"name": "agent1", "id": None, "inputs": None, "prompt": None, "loop_on": None, "loop_to": None, "max_loops": None},
-        {"name": "agent2", "id": None, "inputs": None, "prompt": None, "loop_on": None, "loop_to": None, "max_loops": None},
+        {"name": "agent1", "id": None, "inputs": None, "prompt": None, "outputs": None, "when": None, "loop_on": None, "loop_to": None, "max_loops": None},
+        {"name": "agent2", "id": None, "inputs": None, "prompt": None, "outputs": None, "when": None, "loop_on": None, "loop_to": None, "max_loops": None},
     ]
 
 
@@ -27,7 +27,7 @@ def test_load_workflow_step_with_prompt(tmp_path):
     )
     from harness import load_workflow
     steps = load_workflow("mywf", workflows_dir=tmp_path)
-    assert steps == [{"name": "agent1", "id": None, "inputs": None, "prompt": "Focus on tests.", "loop_on": None, "loop_to": None, "max_loops": None}]
+    assert steps == [{"name": "agent1", "id": None, "inputs": None, "prompt": "Focus on tests.", "outputs": None, "when": None, "loop_on": None, "loop_to": None, "max_loops": None}]
 
 
 def test_load_workflow_step_without_prompt_is_none(tmp_path):
@@ -566,6 +566,258 @@ def test_trace_show_command(tmp_path, monkeypatch, capsys):
     assert "abc12345" in captured.out
     assert "planner" in captured.out
     assert "Here is the plan." in captured.out
+
+
+# --- Artifacts system tests ---
+
+
+def test_load_workflow_step_with_outputs(tmp_path):
+    """outputs field is parsed from YAML and returned in step dict."""
+    wf = tmp_path / "mywf.yaml"
+    wf.write_text(
+        "name: mywf\nsteps:\n"
+        "  - name: planner\n"
+        "    id: plan\n"
+        "    outputs:\n"
+        "      plan: json\n"
+        "      summary: text\n"
+    )
+    from harness import load_workflow
+    steps = load_workflow("mywf", workflows_dir=tmp_path)
+    assert steps[0]["outputs"] == {"plan": "json", "summary": "text"}
+
+
+def test_load_workflow_step_without_outputs_is_none(tmp_path):
+    """Steps without outputs have outputs=None."""
+    wf = tmp_path / "mywf.yaml"
+    wf.write_text("name: mywf\nsteps:\n  - name: agent1\n")
+    from harness import load_workflow
+    steps = load_workflow("mywf", workflows_dir=tmp_path)
+    assert steps[0]["outputs"] is None
+
+
+def test_parse_artifacts_extracts_fenced_blocks():
+    """parse_artifacts extracts content from fenced code blocks tagged with artifact names."""
+    from harness import parse_artifacts
+    raw = 'Some text\n```plan\n{"steps": [1, 2]}\n```\nMore text\n```summary\nDone.\n```'
+    result = parse_artifacts(raw, {"plan": "json", "summary": "text"})
+    assert result["plan"] == '{"steps": [1, 2]}'
+    assert result["summary"] == "Done."
+
+
+def test_parse_artifacts_fallback_to_raw():
+    """parse_artifacts falls back to full raw output when no fenced block found."""
+    from harness import parse_artifacts
+    raw = "Just plain text output with no fenced blocks."
+    result = parse_artifacts(raw, {"plan": "json"})
+    assert result["plan"] == raw
+
+
+def test_run_pipeline_artifacts_injected_with_labels():
+    """Downstream step receives labeled inputs when using inputs field."""
+    from unittest.mock import patch
+    from harness import run_pipeline
+
+    captured_inputs = []
+
+    def fake_agent_loop(user_message, messages, **kwargs):
+        captured_inputs.append(user_message)
+        messages.append({"role": "assistant", "content": "output"})
+        return {}
+
+    steps = [
+        {"name": "planner", "id": "plan", "prompt": None, "inputs": None,
+         "outputs": None, "when": None,
+         "loop_on": None, "loop_to": None, "max_loops": None},
+        {"name": "implementer", "prompt": None, "inputs": ["plan"],
+         "outputs": None, "when": None,
+         "loop_on": None, "loop_to": None, "max_loops": None},
+    ]
+
+    with patch("harness.load_agent", return_value=_agent_config()), \
+         patch("harness.agent_loop", side_effect=fake_agent_loop), \
+         patch("harness.build_mcp_clients", return_value=[]):
+        run_pipeline(steps, "Do the thing")
+
+    # Second step should get labeled input
+    assert captured_inputs[1] == "## Input: plan\noutput"
+
+
+def test_run_pipeline_artifacts_stored_from_fenced_blocks():
+    """Artifacts declared in outputs are parsed and stored in step_outputs."""
+    from unittest.mock import patch
+    from harness import run_pipeline
+
+    captured_inputs = []
+
+    def fake_agent_loop(user_message, messages, **kwargs):
+        captured_inputs.append(user_message)
+        if len(captured_inputs) == 1:
+            messages.append({"role": "assistant", "content": 'Here is the plan:\n```plan\n{"steps": ["a", "b"]}\n```\nDone.'})
+        else:
+            messages.append({"role": "assistant", "content": "implemented"})
+        return {}
+
+    steps = [
+        {"name": "planner", "id": "planner_step", "prompt": None, "inputs": None,
+         "outputs": {"plan": "json"}, "when": None,
+         "loop_on": None, "loop_to": None, "max_loops": None},
+        {"name": "implementer", "prompt": None, "inputs": ["plan"],
+         "outputs": None, "when": None,
+         "loop_on": None, "loop_to": None, "max_loops": None},
+    ]
+
+    with patch("harness.load_agent", return_value=_agent_config()), \
+         patch("harness.agent_loop", side_effect=fake_agent_loop), \
+         patch("harness.build_mcp_clients", return_value=[]):
+        run_pipeline(steps, "Do the thing")
+
+    # The implementer should receive the extracted artifact, not the raw output
+    assert '## Input: plan\n{"steps": ["a", "b"]}' == captured_inputs[1]
+
+
+# --- Conditional branching (when) tests ---
+
+
+def test_load_workflow_step_with_when(tmp_path):
+    """when field is parsed from YAML and returned in step dict."""
+    wf = tmp_path / "mywf.yaml"
+    wf.write_text(
+        "name: mywf\nsteps:\n"
+        "  - name: reviewer\n"
+        "    id: review\n"
+        "  - name: implementer\n"
+        "    when: 'REVISION_NEEDED in review'\n"
+    )
+    from harness import load_workflow
+    steps = load_workflow("mywf", workflows_dir=tmp_path)
+    assert steps[1]["when"] == "REVISION_NEEDED in review"
+
+
+def test_run_pipeline_when_true_runs_step():
+    """Step executes when its when condition matches."""
+    from unittest.mock import patch
+    from harness import run_pipeline
+
+    call_count = [0]
+
+    def fake_agent_loop(user_message, messages, **kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            messages.append({"role": "assistant", "content": "REVISION_NEEDED: fix tests"})
+        else:
+            messages.append({"role": "assistant", "content": "fixed"})
+        return {}
+
+    steps = [
+        {"name": "reviewer", "id": "review", "prompt": None, "inputs": None,
+         "outputs": None, "when": None,
+         "loop_on": None, "loop_to": None, "max_loops": None},
+        {"name": "implementer", "prompt": None, "inputs": None,
+         "outputs": None, "when": "REVISION_NEEDED in review",
+         "loop_on": None, "loop_to": None, "max_loops": None},
+    ]
+
+    with patch("harness.load_agent", return_value=_agent_config()), \
+         patch("harness.agent_loop", side_effect=fake_agent_loop), \
+         patch("harness.build_mcp_clients", return_value=[]):
+        run_pipeline(steps, "Check it")
+
+    assert call_count[0] == 2  # both steps ran
+
+
+def test_run_pipeline_when_false_skips_step():
+    """Step is skipped when its when condition does not match."""
+    from unittest.mock import patch
+    from harness import run_pipeline
+
+    call_count = [0]
+
+    def fake_agent_loop(user_message, messages, **kwargs):
+        call_count[0] += 1
+        messages.append({"role": "assistant", "content": "APPROVED: looks great"})
+        return {}
+
+    steps = [
+        {"name": "reviewer", "id": "review", "prompt": None, "inputs": None,
+         "outputs": None, "when": None,
+         "loop_on": None, "loop_to": None, "max_loops": None},
+        {"name": "implementer", "prompt": None, "inputs": None,
+         "outputs": None, "when": "REVISION_NEEDED in review",
+         "loop_on": None, "loop_to": None, "max_loops": None},
+    ]
+
+    with patch("harness.load_agent", return_value=_agent_config()), \
+         patch("harness.agent_loop", side_effect=fake_agent_loop), \
+         patch("harness.build_mcp_clients", return_value=[]):
+        run_pipeline(steps, "Check it")
+
+    assert call_count[0] == 1  # only reviewer ran, implementer skipped
+
+
+def test_load_workflow_when_references_unknown_id_raises(tmp_path):
+    """when referencing an unknown step id triggers ValueError."""
+    wf = tmp_path / "mywf.yaml"
+    wf.write_text(
+        "name: mywf\nsteps:\n"
+        "  - name: agent1\n"
+        "  - name: agent2\n"
+        "    when: 'FOO in nonexistent'\n"
+    )
+    from harness import load_workflow
+    with pytest.raises(ValueError):
+        load_workflow("mywf", workflows_dir=tmp_path)
+
+
+def test_load_workflow_when_and_loop_on_raises(tmp_path):
+    """Step cannot have both loop_on and when."""
+    wf = tmp_path / "mywf.yaml"
+    wf.write_text(
+        "name: mywf\nsteps:\n"
+        "  - name: implementer\n"
+        "    id: impl\n"
+        "  - name: reviewer\n"
+        "    when: 'FOO in impl'\n"
+        "    loop_on: UNAPPROVED\n"
+        "    loop_to: implementer\n"
+    )
+    from harness import load_workflow
+    with pytest.raises(ValueError):
+        load_workflow("mywf", workflows_dir=tmp_path)
+
+
+def test_load_workflow_outputs_conflict_with_existing_id_raises(tmp_path):
+    """Output artifact name that conflicts with an existing step id raises ValueError."""
+    wf = tmp_path / "mywf.yaml"
+    wf.write_text(
+        "name: mywf\nsteps:\n"
+        "  - name: planner\n"
+        "    id: plan\n"
+        "  - name: implementer\n"
+        "    id: impl\n"
+        "    outputs:\n"
+        "      plan: json\n"  # conflicts with planner's id
+    )
+    from harness import load_workflow
+    with pytest.raises(ValueError):
+        load_workflow("mywf", workflows_dir=tmp_path)
+
+
+def test_load_workflow_inputs_can_reference_artifact_names(tmp_path):
+    """inputs field can reference artifact names from outputs, not just step ids."""
+    wf = tmp_path / "mywf.yaml"
+    wf.write_text(
+        "name: mywf\nsteps:\n"
+        "  - name: planner\n"
+        "    id: plan_step\n"
+        "    outputs:\n"
+        "      plan: json\n"
+        "  - name: implementer\n"
+        "    inputs: [plan]\n"
+    )
+    from harness import load_workflow
+    steps = load_workflow("mywf", workflows_dir=tmp_path)
+    assert steps[1]["inputs"] == ["plan"]
 
 
 def test_replay_command(tmp_path, monkeypatch):

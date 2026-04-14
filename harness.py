@@ -2,6 +2,7 @@
 """Agent pipeline executor — runs workflows through agent chains."""
 
 import argparse
+import re
 import sys
 import threading
 import time
@@ -36,6 +37,8 @@ class StepConfig(TypedDict):
     id: NotRequired[str | None]
     prompt: str | None
     inputs: NotRequired[list[str] | None]
+    outputs: NotRequired[dict[str, str] | None]
+    when: NotRequired[str | None]
     loop_on: NotRequired[str | None]
     loop_to: NotRequired[str | None]
     max_loops: NotRequired[int | None]
@@ -49,6 +52,7 @@ def load_workflow(name: str, workflows_dir: Path = _HERE / "workflows") -> list[
             steps: list[StepConfig] = []
             seen_names: set[str] = set()
             seen_ids: set[str] = set()
+            seen_artifact_names: set[str] = set()
             for step in data.get("steps", []):
                 step_name = step["name"]
                 step_id = step.get("id") or None
@@ -57,21 +61,40 @@ def load_workflow(name: str, workflows_dir: Path = _HERE / "workflows") -> list[
                 max_loops = step.get("max_loops")
                 raw_inputs = step.get("inputs")
                 inputs: list[str] | None = list(raw_inputs) if raw_inputs else None
+                raw_outputs = step.get("outputs")
+                outputs: dict[str, str] | None = dict(raw_outputs) if raw_outputs else None
+                when: str | None = step.get("when") or None
                 if (loop_on is None) != (loop_to is None):
                     raise ValueError(f"Step '{step_name}' must have both loop_on and loop_to, or neither.")
                 if loop_to is not None and loop_to not in seen_names:
                     raise ValueError(f"Step '{step_name}' loop_to='{loop_to}' must refer to an earlier step.")
                 if loop_on is not None and max_loops is None:
                     max_loops = 3
+                if loop_on is not None and when is not None:
+                    raise ValueError(f"Step '{step_name}' cannot have both loop_on and when.")
                 if inputs is not None:
                     for ref in inputs:
-                        if ref != "__input__" and ref not in seen_ids:
+                        if ref != "__input__" and ref not in seen_ids and ref not in seen_artifact_names:
                             raise ValueError(f"Step '{step_name}' inputs references unknown id '{ref}'.")
+                if outputs is not None:
+                    for artifact_name in outputs:
+                        if artifact_name in seen_artifact_names or artifact_name in seen_ids:
+                            raise ValueError(f"Step '{step_name}' output '{artifact_name}' conflicts with an existing id or artifact name.")
+                        seen_artifact_names.add(artifact_name)
+                if when is not None:
+                    m = re.match(r'^(.+?)\s+in\s+(\w+)$', when)
+                    if not m:
+                        raise ValueError(f"Step '{step_name}' when='{when}' must be 'PATTERN in step_id'.")
+                    ref_id = m.group(2)
+                    if ref_id not in seen_ids and ref_id not in seen_artifact_names:
+                        raise ValueError(f"Step '{step_name}' when references unknown id '{ref_id}'.")
                 steps.append({
                     "name": step_name,
                     "id": step_id,
                     "prompt": step.get("prompt") or None,
                     "inputs": inputs,
+                    "outputs": outputs,
+                    "when": when,
                     "loop_on": loop_on,
                     "loop_to": loop_to,
                     "max_loops": max_loops,
@@ -117,6 +140,23 @@ def load_agent(name: str, agents_dir: Path = _HERE / "agents") -> AgentConfig:
     raise ValueError(f"No agent named '{name}' found in {agents_dir}/")
 
 
+def parse_artifacts(raw_output: str, declared_outputs: dict[str, str]) -> dict[str, str]:
+    """Extract declared artifacts from agent output.
+
+    Looks for fenced code blocks tagged with the artifact name, e.g.:
+        ```plan
+        {"steps": [...]}
+        ```
+    Falls back to the full raw output if a block isn't found.
+    """
+    artifacts: dict[str, str] = {}
+    for name in declared_outputs:
+        pattern = rf'```{re.escape(name)}\s*\n(.*?)```'
+        m = re.search(pattern, raw_output, re.DOTALL)
+        artifacts[name] = m.group(1).strip() if m else raw_output
+    return artifacts
+
+
 def run_pipeline(steps: list[StepConfig], command: str, traces_dir: str | Path = "traces", workflow_name: str = "pipeline") -> None:
     """Run command through each agent in sequence, chaining responses."""
     from trace import Trace, _preview
@@ -145,10 +185,25 @@ def run_pipeline(steps: list[StepConfig], command: str, traces_dir: str | Path =
             input_ids = step.get("inputs")
             step_label = f"{step_index}:{step_name}"
 
+            # Evaluate when condition — skip step if false.
+            when_expr = step.get("when")
+            if when_expr:
+                m = re.match(r'^(.+?)\s+in\s+(\w+)$', when_expr)
+                if m:
+                    pattern, ref_id = m.group(1).strip(), m.group(2)
+                    if ref_id not in step_outputs or pattern not in step_outputs[ref_id]:
+                        print(f"[skip] '{step_name}' when condition not met: {when_expr}", file=sys.stderr)
+                        trace.log(step=step_label, event="step_skip", when=when_expr)
+                        step_index += 1
+                        continue
+
             # Determine what to feed this step.
             if input_ids is not None:
-                parts = [step_outputs[ref] for ref in input_ids if ref in step_outputs]
-                current_input = "\n\n---\n\n".join(parts)
+                parts = []
+                for ref in input_ids:
+                    if ref in step_outputs:
+                        parts.append(f"## Input: {ref}\n{step_outputs[ref]}")
+                current_input = "\n\n".join(parts)
             else:
                 current_input = last_output
 
@@ -204,6 +259,11 @@ def run_pipeline(steps: list[StepConfig], command: str, traces_dir: str | Path =
                 last_output = step_output
                 if step_id:
                     step_outputs[step_id] = step_output
+                declared_outputs = step.get("outputs")
+                if declared_outputs:
+                    artifacts = parse_artifacts(step_output, declared_outputs)
+                    for artifact_name, artifact_value in artifacts.items():
+                        step_outputs[artifact_name] = artifact_value
 
                 trace.log(step=step_label, event="step_end", output_preview=_preview(step_output),
                           duration=time.time() - step_start_time, cost=cost)
@@ -453,6 +513,14 @@ def dry_run_pipeline(workflow_name: str, steps: list[StepConfig]) -> None:
             print(f"       inputs: __input__")
         else:
             print(f"       inputs: previous step output")
+
+        outputs = step.get("outputs")
+        if outputs:
+            print(f"       outputs: {', '.join(f'{k} ({v})' for k, v in outputs.items())}")
+
+        when = step.get("when")
+        if when:
+            print(f"       when: {when}")
 
         loop_on = step.get("loop_on")
         loop_to = step.get("loop_to")

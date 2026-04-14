@@ -23,6 +23,7 @@ AVAILABLE_MODELS = [
     "qwen/qwen3-235b-a22b:free",
     "google/gemini-2.5-flash-preview",
     "deepseek/deepseek-chat-v3-0324:free",
+    "openrouter/elephant-alpha",
 ]
 
 MAX_TOKENS = 4096
