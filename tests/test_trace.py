@@ -100,3 +100,41 @@ def test_trace_load_snapshot(tmp_path):
 
     loaded = Trace.load_snapshot(trace.id, step_index=2, step_name="reviewer", traces_dir=tmp_path)
     assert loaded == [{"role": "user", "content": "hello"}]
+
+
+def test_trace_summary_row():
+    trace = Trace(workflow="pick-and-fix", command="Fix the auth bug")
+    trace.started_at = 1000.0
+    trace.log(step=None, event="pipeline_start", workflow="pick-and-fix", command="Fix the auth bug")
+    trace.log(step="0:planner", event="step_start")
+    trace.log(step="0:planner", event="step_end", output_preview="plan done")
+    trace.log(step="1:implementer", event="step_start")
+    trace.log(step="1:implementer", event="step_end", output_preview="impl done")
+    trace.log(step=None, event="pipeline_end", status="completed", total_cost=0.0342, duration=45.0, total_input=1000, total_output=500)
+    trace.status = "completed"
+
+    row = trace.summary_row()
+    assert row["id"] == trace.id
+    assert row["workflow"] == "pick-and-fix"
+    assert row["status"] == "completed"
+    assert row["steps"] == 2
+    assert row["cost"] == 0.0342
+    assert row["duration"] == 45.0
+
+
+def test_trace_format_detail():
+    trace = Trace(workflow="example", command="Fix bug")
+    trace.log(step=None, event="pipeline_start", workflow="example", command="Fix bug")
+    trace.log(step="0:planner", event="step_start", model="qwen", tools=["read_file"])
+    trace.log(step="0:planner", event="tool_call", tool="read_file", params={"path": "foo.py"})
+    trace.log(step="0:planner", event="tool_result", tool="read_file", result_preview="contents...")
+    trace.log(step="0:planner", event="step_end", output_preview="Here is the plan.", duration=3.4, cost=0.005)
+    trace.log(step=None, event="pipeline_end", status="completed", total_cost=0.005, duration=3.4, total_input=500, total_output=200)
+    trace.status = "completed"
+
+    output = trace.format_detail()
+    assert "example" in output
+    assert "Fix bug" in output
+    assert "planner" in output
+    assert "read_file" in output
+    assert "Here is the plan." in output

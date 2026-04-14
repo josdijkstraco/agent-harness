@@ -103,3 +103,53 @@ class Trace:
         """Load a conversation snapshot for a specific step."""
         path = Path(traces_dir) / f"{trace_id}_messages" / f"step_{step_index}_{step_name}.json"
         return json.loads(path.read_text())
+
+    def summary_row(self) -> dict:
+        """Return a dict summarizing this trace for table display."""
+        step_count = sum(1 for e in self.events if e.event == "step_start")
+        pipeline_end = next((e for e in self.events if e.event == "pipeline_end"), None)
+        cost = pipeline_end.data.get("total_cost", 0.0) if pipeline_end else 0.0
+        duration = pipeline_end.data.get("duration", 0.0) if pipeline_end else 0.0
+        return {
+            "id": self.id,
+            "workflow": self.workflow,
+            "status": self.status,
+            "steps": step_count,
+            "cost": cost,
+            "duration": duration,
+            "started_at": self.started_at,
+        }
+
+    def format_detail(self) -> str:
+        """Format trace as human-readable step-by-step detail."""
+        lines = [f"Trace {self.id} — {self.workflow} ({self.status})", f'Command: "{self.command}"', ""]
+        for e in self.events:
+            if e.event == "step_start":
+                model = e.data.get("model", "?")
+                lines.append(f"Step {e.step} (model: {model})")
+            elif e.event == "tool_call":
+                tool = e.data.get("tool", "?")
+                params = e.data.get("params", {})
+                lines.append(f"  -> tool: {tool}({params})")
+            elif e.event == "tool_result":
+                tool = e.data.get("tool", "?")
+                preview = e.data.get("result_preview", "")
+                error = e.data.get("error")
+                if error:
+                    lines.append(f"  <- {tool}: ERROR: {error}")
+                else:
+                    lines.append(f"  <- {tool}: {preview[:100]}")
+            elif e.event == "step_end":
+                preview = e.data.get("output_preview", "")
+                duration = e.data.get("duration", 0)
+                cost = e.data.get("cost", 0)
+                lines.append(f'  -> output: "{preview[:200]}"')
+                lines.append(f"  ({duration:.1f}s, ${cost:.4f})")
+                lines.append("")
+            elif e.event == "pipeline_end":
+                total_cost = e.data.get("total_cost", 0)
+                duration = e.data.get("duration", 0)
+                total_in = e.data.get("total_input", 0)
+                total_out = e.data.get("total_output", 0)
+                lines.append(f"Total: {duration:.1f}s, ${total_cost:.4f}, {total_in:,} in / {total_out:,} out")
+        return "\n".join(lines)
