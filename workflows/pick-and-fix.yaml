@@ -6,7 +6,14 @@ steps:
     prompt: |
       Pick a card from the 'Agent Harness' project that is in the 'todo' column
       and move it to the 'in progress' column. Your final response needs to include
-      the context of the card. If you don't find any cards, reply with STOP.
+      the context of the card. If you don't find any cards, call submit_result with status STOP.
+    response_schema:
+      status:
+        type: string
+        enum: [FOUND, STOP]
+      context:
+        type: string
+    stop_on: status == STOP
   - name: planner
     prompt: |
       Plan the fix for the request.
@@ -16,9 +23,14 @@ steps:
       Implement the fix.
   - name: reviewer
     prompt: |
-      Review the fix. If the fix is good, reply with APPROVED. If the fix is not
-      good, reply with REJECTED and explain why.
-    loop_on: REJECTED
+      Review the fix. Call submit_result with your verdict.
+    response_schema:
+      decision:
+        type: string
+        enum: [APPROVED, REJECTED]
+      feedback:
+        type: string
+    loop_on: decision == REJECTED
     loop_to: implementer
     max_loops: 3
   - name: github
