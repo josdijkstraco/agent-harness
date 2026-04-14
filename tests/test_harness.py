@@ -14,8 +14,8 @@ def test_load_workflow_finds_by_name(tmp_path):
     from harness import load_workflow
     steps = load_workflow("mywf", workflows_dir=tmp_path)
     assert steps == [
-        {"name": "agent1", "prompt": None, "loop_on": None, "loop_to": None, "max_loops": None},
-        {"name": "agent2", "prompt": None, "loop_on": None, "loop_to": None, "max_loops": None},
+        {"name": "agent1", "id": None, "inputs": None, "prompt": None, "loop_on": None, "loop_to": None, "max_loops": None},
+        {"name": "agent2", "id": None, "inputs": None, "prompt": None, "loop_on": None, "loop_to": None, "max_loops": None},
     ]
 
 
@@ -27,7 +27,7 @@ def test_load_workflow_step_with_prompt(tmp_path):
     )
     from harness import load_workflow
     steps = load_workflow("mywf", workflows_dir=tmp_path)
-    assert steps == [{"name": "agent1", "prompt": "Focus on tests.", "loop_on": None, "loop_to": None, "max_loops": None}]
+    assert steps == [{"name": "agent1", "id": None, "inputs": None, "prompt": "Focus on tests.", "loop_on": None, "loop_to": None, "max_loops": None}]
 
 
 def test_load_workflow_step_without_prompt_is_none(tmp_path):
@@ -42,7 +42,7 @@ def test_load_workflow_step_without_prompt_is_none(tmp_path):
 def test_load_workflow_not_found_raises(tmp_path):
     """Raises SystemExit when no workflow matches the name."""
     from harness import load_workflow
-    with pytest.raises(SystemExit):
+    with pytest.raises(ValueError):
         load_workflow("missing", workflows_dir=tmp_path)
 
 
@@ -73,7 +73,7 @@ def test_load_agent_with_model(tmp_path):
 def test_load_agent_not_found_raises(tmp_path):
     """Raises SystemExit when no agent matches the name."""
     from harness import load_agent
-    with pytest.raises(SystemExit):
+    with pytest.raises(ValueError):
         load_agent("missing", agents_dir=tmp_path)
 
 
@@ -84,7 +84,7 @@ def test_load_agent_unknown_tool_raises(tmp_path):
         "name: myagent\nprompt: Hi.\ntools:\n  - name: nonexistent_tool\n"
     )
     from harness import load_agent
-    with pytest.raises(SystemExit):
+    with pytest.raises(ValueError):
         load_agent("myagent", agents_dir=tmp_path)
 
 
@@ -246,7 +246,7 @@ def test_load_workflow_loop_on_without_loop_to_raises(tmp_path):
         "    loop_on: UNAPPROVED\n"
     )
     from harness import load_workflow
-    with pytest.raises(SystemExit):
+    with pytest.raises(ValueError):
         load_workflow("mywf", workflows_dir=tmp_path)
 
 
@@ -261,7 +261,7 @@ def test_load_workflow_loop_to_forward_reference_raises(tmp_path):
         "  - name: agent2\n"
     )
     from harness import load_workflow
-    with pytest.raises(SystemExit):
+    with pytest.raises(ValueError):
         load_workflow("mywf", workflows_dir=tmp_path)
 
 
@@ -411,5 +411,101 @@ def test_run_pipeline_step_prompt_not_duplicated_on_loop():
     # The implementer's prompt must NOT appear in the reviewer's input
     assert "Do the work." not in captured_inputs[1]
     assert "Do the work." not in captured_inputs[3]
+
+
+def test_run_pipeline_creates_trace(tmp_path):
+    """run_pipeline creates a trace JSON file when traces_dir is provided."""
+    import json
+    from unittest.mock import patch
+    from harness import run_pipeline
+
+    def fake_load_agent(name, **kwargs):
+        return _agent_config()
+
+    def fake_agent_loop(user_message, messages, **kwargs):
+        messages.append({"role": "assistant", "content": "output from agent"})
+        return {"input_tokens": 100, "output_tokens": 50, "cost": 0.001}
+
+    steps = [
+        {"name": "planner", "id": None, "prompt": None, "inputs": None, "loop_on": None, "loop_to": None, "max_loops": None},
+    ]
+
+    with patch("harness.load_agent", side_effect=fake_load_agent), \
+         patch("harness.agent_loop", side_effect=fake_agent_loop), \
+         patch("harness.build_mcp_clients", return_value=[]):
+        run_pipeline(steps, "Fix the bug", traces_dir=tmp_path)
+
+    trace_files = list(tmp_path.glob("*.json"))
+    assert len(trace_files) == 1
+
+    data = json.loads(trace_files[0].read_text())
+    assert data["workflow"] == "pipeline"
+    assert data["command"] == "Fix the bug"
+    assert data["status"] == "completed"
+
+    event_types = [e["event"] for e in data["events"]]
+    assert "pipeline_start" in event_types
+    assert "step_start" in event_types
+    assert "step_end" in event_types
+    assert "pipeline_end" in event_types
+
+
+def test_run_pipeline_saves_snapshots(tmp_path):
+    """run_pipeline saves conversation snapshots per step."""
+    from unittest.mock import patch
+    from harness import run_pipeline
+
+    def fake_load_agent(name, **kwargs):
+        return _agent_config()
+
+    def fake_agent_loop(user_message, messages, **kwargs):
+        messages.append({"role": "assistant", "content": "step output"})
+        return {"input_tokens": 50, "output_tokens": 25, "cost": 0.0005}
+
+    steps = [
+        {"name": "planner", "id": None, "prompt": None, "inputs": None, "loop_on": None, "loop_to": None, "max_loops": None},
+        {"name": "implementer", "id": None, "prompt": None, "inputs": None, "loop_on": None, "loop_to": None, "max_loops": None},
+    ]
+
+    with patch("harness.load_agent", side_effect=fake_load_agent), \
+         patch("harness.agent_loop", side_effect=fake_agent_loop), \
+         patch("harness.build_mcp_clients", return_value=[]):
+        run_pipeline(steps, "Fix the bug", traces_dir=tmp_path)
+
+    trace_file = list(tmp_path.glob("*.json"))[0]
+    trace_id = trace_file.stem
+
+    snapshot_dir = tmp_path / f"{trace_id}_messages"
+    assert snapshot_dir.is_dir()
+    assert (snapshot_dir / "step_0_planner.json").exists()
+    assert (snapshot_dir / "step_1_implementer.json").exists()
+
+
+def test_run_pipeline_trace_on_failure(tmp_path):
+    """Trace is saved with status 'failed' when an agent raises."""
+    import json
+    from unittest.mock import patch
+    from harness import run_pipeline
+
+    def fake_load_agent(name, **kwargs):
+        return _agent_config()
+
+    def fake_agent_loop(user_message, messages, **kwargs):
+        raise RuntimeError("API exploded")
+
+    steps = [
+        {"name": "planner", "id": None, "prompt": None, "inputs": None, "loop_on": None, "loop_to": None, "max_loops": None},
+    ]
+
+    with patch("harness.load_agent", side_effect=fake_load_agent), \
+         patch("harness.agent_loop", side_effect=fake_agent_loop), \
+         patch("harness.build_mcp_clients", return_value=[]):
+        with pytest.raises(RuntimeError):
+            run_pipeline(steps, "Fix the bug", traces_dir=tmp_path)
+
+    trace_files = list(tmp_path.glob("*.json"))
+    assert len(trace_files) == 1
+    data = json.loads(trace_files[0].read_text())
+    assert data["status"] == "failed"
 
 

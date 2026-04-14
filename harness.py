@@ -3,6 +3,7 @@
 
 import argparse
 import sys
+import time
 from pathlib import Path
 from typing import NotRequired, TypedDict
 
@@ -113,8 +114,10 @@ def load_agent(name: str, agents_dir: Path = _HERE / "agents") -> AgentConfig:
     raise ValueError(f"No agent named '{name}' found in {agents_dir}/")
 
 
-def run_pipeline(steps: list[StepConfig], command: str) -> None:
+def run_pipeline(steps: list[StepConfig], command: str, traces_dir: str | Path = "traces", workflow_name: str = "pipeline") -> None:
     """Run command through each agent in sequence, chaining responses."""
+    from trace import Trace, _preview
+
     step_index_map: dict[str, int] = {s["name"]: i for i, s in enumerate(steps)}
     agent_cache: dict[str, AgentConfig] = {}
     loop_counts: dict[str, int] = {}
@@ -126,80 +129,119 @@ def run_pipeline(steps: list[StepConfig], command: str) -> None:
     total_output_tokens = 0
     total_cost = 0.0
 
-    while step_index < len(steps):
-        step = steps[step_index]
-        step_name = step["name"]
-        step_id = step.get("id")
-        step_prompt = step.get("prompt")
-        input_ids = step.get("inputs")
+    trace = Trace(workflow=workflow_name, command=command)
+    trace.log(event="pipeline_start", workflow=workflow_name, command=command)
+    pipeline_start_time = time.time()
 
-        # Determine what to feed this step.
-        if input_ids is not None:
-            parts = [step_outputs[ref] for ref in input_ids if ref in step_outputs]
-            current_input = "\n\n---\n\n".join(parts)
-        else:
-            current_input = last_output
+    try:
+        while step_index < len(steps):
+            step = steps[step_index]
+            step_name = step["name"]
+            step_id = step.get("id")
+            step_prompt = step.get("prompt")
+            input_ids = step.get("inputs")
+            step_label = f"{step_index}:{step_name}"
 
-        if step_name not in agent_cache:
-            agent_cache[step_name] = load_agent(step_name)
-        agent = agent_cache[step_name]
-        model = agent["model"] or DEFAULT_MODEL
-        messages: list = [{"role": "system", "content": agent["prompt"]}]
-        tools_str = ", ".join(agent["tool_names"]) or "none"
-        skills_str = ", ".join(agent["skill_names"]) or "none"
-        mcp_names = agent["mcp_names"]
-        mcp_str = ", ".join(mcp_names) or "none"
-        mcp_clients = build_mcp_clients(mcp_names) if mcp_names else []
-        print(f"\n[agent: {step_name}]  tools: {tools_str}  |  skills: {skills_str}  |  mcp: {mcp_str}")
-        effective_input = (step_prompt + "\n\n" + current_input) if step_prompt else current_input
-        print(f"[system prompt] {agent['prompt']}")
-        print(f"[user prompt] {effective_input}")
-        try:
-            usage = agent_loop(effective_input, messages, model=model, tools=agent["tools"], mcp_clients=mcp_clients)
-        finally:
-            for client in mcp_clients:
-                client.close()
-        in_tok = usage.get("input_tokens", 0)
-        out_tok = usage.get("output_tokens", 0)
-        cost = usage.get("cost", 0.0)
-        total_input_tokens += in_tok
-        total_output_tokens += out_tok
-        total_cost += cost
-        print(f"[usage: {step_name}]  in={in_tok:,}  out={out_tok:,}  cost=${cost:.4f}")
-        if usage.get("cancelled"):
-            print("\nPipeline cancelled.", file=sys.stderr)
-            sys.exit(0)
-        step_output: str | None = None
-        for msg in reversed(messages):
-            if msg["role"] == "assistant" and msg.get("content"):
-                step_output = msg["content"]
-                break
-        if step_output is None:
-            print(f"Warning: agent '{step_name}' produced no text output; passing previous input forward.", file=sys.stderr)
-            step_index += 1
-            continue
-        last_output = step_output
-        if step_id:
-            step_outputs[step_id] = step_output
-        if "STOP" in step_output:
-            print("Nothing to do.", file=sys.stderr)
-            print(f"\n[total usage]  in={total_input_tokens:,}  out={total_output_tokens:,}  cost=${total_cost:.4f}")
-            return
-        loop_on = step.get("loop_on")
-        loop_to = step.get("loop_to")
-        max_loops = step.get("max_loops")
-        if loop_on and loop_to and loop_on in step_output:
-            count = loop_counts.get(step_name, 0)
-            if count < max_loops:
-                loop_counts[step_name] = count + 1
-                print(f"[loop] '{step_name}' triggered '{loop_on}' (loop {count + 1}/{max_loops}), jumping to '{loop_to}'", file=sys.stderr)
-                step_index = step_index_map[loop_to]
-                continue
+            # Determine what to feed this step.
+            if input_ids is not None:
+                parts = [step_outputs[ref] for ref in input_ids if ref in step_outputs]
+                current_input = "\n\n---\n\n".join(parts)
             else:
-                print(f"[loop] '{step_name}' hit max_loops={max_loops}; continuing to next step.", file=sys.stderr)
-        step_index += 1
+                current_input = last_output
 
-    print(f"\n[total usage]  in={total_input_tokens:,}  out={total_output_tokens:,}  cost=${total_cost:.4f}")
+            try:
+                if step_name not in agent_cache:
+                    agent_cache[step_name] = load_agent(step_name)
+                agent = agent_cache[step_name]
+                model = agent["model"] or DEFAULT_MODEL
+                messages: list = [{"role": "system", "content": agent["prompt"]}]
+                tools_str = ", ".join(agent["tool_names"]) or "none"
+                skills_str = ", ".join(agent["skill_names"]) or "none"
+                mcp_names = agent["mcp_names"]
+                mcp_str = ", ".join(mcp_names) or "none"
+                mcp_clients = build_mcp_clients(mcp_names) if mcp_names else []
+                print(f"\n[agent: {step_name}]  tools: {tools_str}  |  skills: {skills_str}  |  mcp: {mcp_str}")
+                effective_input = (step_prompt + "\n\n" + current_input) if step_prompt else current_input
+                print(f"[system prompt] {agent['prompt']}")
+                print(f"[user prompt] {effective_input}")
+
+                trace.log(step=step_label, event="step_start", model=model,
+                          tools=agent["tool_names"], prompt_preview=_preview(effective_input))
+                step_start_time = time.time()
+
+                try:
+                    usage = agent_loop(effective_input, messages, model=model, tools=agent["tools"],
+                                       mcp_clients=mcp_clients, trace=trace, step_label=step_label)
+                finally:
+                    for client in mcp_clients:
+                        client.close()
+                in_tok = usage.get("input_tokens", 0)
+                out_tok = usage.get("output_tokens", 0)
+                cost = usage.get("cost", 0.0)
+                total_input_tokens += in_tok
+                total_output_tokens += out_tok
+                total_cost += cost
+                print(f"[usage: {step_name}]  in={in_tok:,}  out={out_tok:,}  cost=${cost:.4f}")
+                if usage.get("cancelled"):
+                    trace.status = "cancelled"
+                    print("\nPipeline cancelled.", file=sys.stderr)
+                    sys.exit(0)
+                step_output: str | None = None
+                for msg in reversed(messages):
+                    if msg["role"] == "assistant" and msg.get("content"):
+                        step_output = msg["content"]
+                        break
+                if step_output is None:
+                    print(f"Warning: agent '{step_name}' produced no text output; passing previous input forward.", file=sys.stderr)
+                    trace.log(step=step_label, event="step_end", output_preview="(no output)",
+                              duration=time.time() - step_start_time, cost=cost)
+                    trace.save_snapshot(step_index, step_name, messages, traces_dir=traces_dir)
+                    step_index += 1
+                    continue
+                last_output = step_output
+                if step_id:
+                    step_outputs[step_id] = step_output
+
+                trace.log(step=step_label, event="step_end", output_preview=_preview(step_output),
+                          duration=time.time() - step_start_time, cost=cost)
+                trace.save_snapshot(step_index, step_name, messages, traces_dir=traces_dir)
+
+                if "STOP" in step_output:
+                    print("Nothing to do.", file=sys.stderr)
+                    print(f"\n[total usage]  in={total_input_tokens:,}  out={total_output_tokens:,}  cost=${total_cost:.4f}")
+                    trace.status = "completed"
+                    return
+                loop_on = step.get("loop_on")
+                loop_to = step.get("loop_to")
+                max_loops = step.get("max_loops")
+                if loop_on and loop_to and loop_on in step_output:
+                    count = loop_counts.get(step_name, 0)
+                    if count < max_loops:
+                        loop_counts[step_name] = count + 1
+                        print(f"[loop] '{step_name}' triggered '{loop_on}' (loop {count + 1}/{max_loops}), jumping to '{loop_to}'", file=sys.stderr)
+                        trace.log(step=step_label, event="loop", loop_on=loop_on, loop_to=loop_to,
+                                  iteration=count + 1, max=max_loops)
+                        step_index = step_index_map[loop_to]
+                        continue
+                    else:
+                        print(f"[loop] '{step_name}' hit max_loops={max_loops}; continuing to next step.", file=sys.stderr)
+                step_index += 1
+            except Exception:
+                print(f"\n[error: {step_name}] step failed", file=sys.stderr)
+                print(f"\n[total usage]  in={total_input_tokens:,}  out={total_output_tokens:,}  cost=${total_cost:.4f}")
+                raise
+
+        trace.status = "completed"
+        print(f"\n[total usage]  in={total_input_tokens:,}  out={total_output_tokens:,}  cost=${total_cost:.4f}")
+    except Exception:
+        if trace.status == "running":
+            trace.status = "failed"
+        raise
+    finally:
+        duration = time.time() - pipeline_start_time
+        trace.log(event="pipeline_end", status=trace.status, total_input=total_input_tokens,
+                  total_output=total_output_tokens, total_cost=total_cost, duration=duration)
+        trace.save(traces_dir=traces_dir)
 
 
 def main() -> None:
@@ -218,7 +260,7 @@ def main() -> None:
             run_pipeline(step_names, args.prompt)
         else:
             parser.error(f"Unknown subcommand: {args.subcommand}")
-    except ValueError as e:
+    except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
