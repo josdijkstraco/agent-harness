@@ -14,8 +14,8 @@ def test_load_workflow_finds_by_name(tmp_path):
     from harness import load_workflow
     steps = load_workflow("mywf", workflows_dir=tmp_path)
     assert steps == [
-        {"name": "agent1", "id": None, "inputs": None, "prompt": None, "outputs": None, "when": None, "loop_on": None, "loop_to": None, "max_loops": None},
-        {"name": "agent2", "id": None, "inputs": None, "prompt": None, "outputs": None, "when": None, "loop_on": None, "loop_to": None, "max_loops": None},
+        {"name": "agent1", "id": None, "inputs": None, "prompt": None, "outputs": None, "when": None, "loop_on": None, "loop_to": None, "max_loops": None, "response_schema": None, "stop_on": None},
+        {"name": "agent2", "id": None, "inputs": None, "prompt": None, "outputs": None, "when": None, "loop_on": None, "loop_to": None, "max_loops": None, "response_schema": None, "stop_on": None},
     ]
 
 
@@ -27,7 +27,7 @@ def test_load_workflow_step_with_prompt(tmp_path):
     )
     from harness import load_workflow
     steps = load_workflow("mywf", workflows_dir=tmp_path)
-    assert steps == [{"name": "agent1", "id": None, "inputs": None, "prompt": "Focus on tests.", "outputs": None, "when": None, "loop_on": None, "loop_to": None, "max_loops": None}]
+    assert steps == [{"name": "agent1", "id": None, "inputs": None, "prompt": "Focus on tests.", "outputs": None, "when": None, "loop_on": None, "loop_to": None, "max_loops": None, "response_schema": None, "stop_on": None}]
 
 
 def test_load_workflow_step_without_prompt_is_none(tmp_path):
@@ -921,5 +921,147 @@ def test_eval_condition_whitespace_handling():
     """eval_condition handles extra whitespace around field and value."""
     from harness import eval_condition
     assert eval_condition("  decision  ==  REJECTED  ", {"decision": "REJECTED"}) is True
+
+
+# --- Structured outputs: load_workflow validation tests ---
+
+
+def test_load_workflow_step_with_response_schema(tmp_path):
+    """response_schema is parsed from YAML and returned in step dict."""
+    wf = tmp_path / "mywf.yaml"
+    wf.write_text(
+        "name: mywf\nsteps:\n"
+        "  - name: reviewer\n"
+        "    response_schema:\n"
+        "      decision:\n"
+        "        type: string\n"
+        "        enum: [APPROVED, REJECTED]\n"
+        "      feedback:\n"
+        "        type: string\n"
+    )
+    from harness import load_workflow
+    steps = load_workflow("mywf", workflows_dir=tmp_path)
+    assert steps[0]["response_schema"] == {
+        "decision": {"type": "string", "enum": ["APPROVED", "REJECTED"]},
+        "feedback": {"type": "string"},
+    }
+
+
+def test_load_workflow_step_without_response_schema_is_none(tmp_path):
+    """Steps without response_schema have response_schema=None."""
+    wf = tmp_path / "mywf.yaml"
+    wf.write_text("name: mywf\nsteps:\n  - name: agent1\n")
+    from harness import load_workflow
+    steps = load_workflow("mywf", workflows_dir=tmp_path)
+    assert steps[0]["response_schema"] is None
+    assert steps[0]["stop_on"] is None
+
+
+def test_load_workflow_stop_on_without_response_schema_raises(tmp_path):
+    """stop_on without response_schema raises ValueError."""
+    wf = tmp_path / "mywf.yaml"
+    wf.write_text(
+        "name: mywf\nsteps:\n"
+        "  - name: agent1\n"
+        "    stop_on: status == STOP\n"
+    )
+    from harness import load_workflow
+    with pytest.raises(ValueError, match="response_schema"):
+        load_workflow("mywf", workflows_dir=tmp_path)
+
+
+def test_load_workflow_stop_on_and_loop_on_raises(tmp_path):
+    """Step cannot have both stop_on and loop_on."""
+    wf = tmp_path / "mywf.yaml"
+    wf.write_text(
+        "name: mywf\nsteps:\n"
+        "  - name: implementer\n"
+        "  - name: reviewer\n"
+        "    response_schema:\n"
+        "      decision:\n"
+        "        type: string\n"
+        "        enum: [APPROVED, REJECTED, STOP]\n"
+        "    stop_on: decision == STOP\n"
+        "    loop_on: decision == REJECTED\n"
+        "    loop_to: implementer\n"
+    )
+    from harness import load_workflow
+    with pytest.raises(ValueError, match="stop_on.*loop_on"):
+        load_workflow("mywf", workflows_dir=tmp_path)
+
+
+def test_load_workflow_response_schema_field_missing_type_raises(tmp_path):
+    """response_schema field without type raises ValueError."""
+    wf = tmp_path / "mywf.yaml"
+    wf.write_text(
+        "name: mywf\nsteps:\n"
+        "  - name: agent1\n"
+        "    response_schema:\n"
+        "      decision:\n"
+        "        enum: [YES, NO]\n"
+    )
+    from harness import load_workflow
+    with pytest.raises(ValueError, match="type"):
+        load_workflow("mywf", workflows_dir=tmp_path)
+
+
+def test_load_workflow_loop_on_with_schema_validates_field(tmp_path):
+    """loop_on with response_schema validates that the field exists in the schema."""
+    wf = tmp_path / "mywf.yaml"
+    wf.write_text(
+        "name: mywf\nsteps:\n"
+        "  - name: implementer\n"
+        "  - name: reviewer\n"
+        "    response_schema:\n"
+        "      decision:\n"
+        "        type: string\n"
+        "        enum: [APPROVED, REJECTED]\n"
+        "    loop_on: nonexistent == REJECTED\n"
+        "    loop_to: implementer\n"
+    )
+    from harness import load_workflow
+    with pytest.raises(ValueError, match="nonexistent"):
+        load_workflow("mywf", workflows_dir=tmp_path)
+
+
+def test_load_workflow_loop_on_with_schema_validates_enum_value(tmp_path):
+    """loop_on value must be in the enum if the field has one."""
+    wf = tmp_path / "mywf.yaml"
+    wf.write_text(
+        "name: mywf\nsteps:\n"
+        "  - name: implementer\n"
+        "  - name: reviewer\n"
+        "    response_schema:\n"
+        "      decision:\n"
+        "        type: string\n"
+        "        enum: [APPROVED, REJECTED]\n"
+        "    loop_on: decision == INVALID\n"
+        "    loop_to: implementer\n"
+    )
+    from harness import load_workflow
+    with pytest.raises(ValueError, match="INVALID"):
+        load_workflow("mywf", workflows_dir=tmp_path)
+
+
+def test_load_workflow_loop_on_with_schema_valid(tmp_path):
+    """loop_on with response_schema and valid field/value passes validation."""
+    wf = tmp_path / "mywf.yaml"
+    wf.write_text(
+        "name: mywf\nsteps:\n"
+        "  - name: implementer\n"
+        "  - name: reviewer\n"
+        "    response_schema:\n"
+        "      decision:\n"
+        "        type: string\n"
+        "        enum: [APPROVED, REJECTED]\n"
+        "      feedback:\n"
+        "        type: string\n"
+        "    loop_on: decision == REJECTED\n"
+        "    loop_to: implementer\n"
+    )
+    from harness import load_workflow
+    steps = load_workflow("mywf", workflows_dir=tmp_path)
+    assert steps[1]["loop_on"] == "decision == REJECTED"
+    assert steps[1]["response_schema"] is not None
 
 

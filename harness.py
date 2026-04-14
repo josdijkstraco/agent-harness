@@ -42,6 +42,8 @@ class StepConfig(TypedDict):
     loop_on: NotRequired[str | None]
     loop_to: NotRequired[str | None]
     max_loops: NotRequired[int | None]
+    response_schema: NotRequired[dict | None]
+    stop_on: NotRequired[str | None]
 
 
 def load_workflow(name: str, workflows_dir: Path = _HERE / "workflows") -> list[StepConfig]:
@@ -88,6 +90,29 @@ def load_workflow(name: str, workflows_dir: Path = _HERE / "workflows") -> list[
                     ref_id = m.group(2)
                     if ref_id not in seen_ids and ref_id not in seen_artifact_names:
                         raise ValueError(f"Step '{step_name}' when references unknown id '{ref_id}'.")
+                response_schema: dict | None = step.get("response_schema") or None
+                stop_on: str | None = step.get("stop_on") or None
+                if response_schema is not None:
+                    for field_name, field_def in response_schema.items():
+                        if "type" not in field_def:
+                            raise ValueError(f"Step '{step_name}' response_schema field '{field_name}' must have a 'type'.")
+                        if "enum" in field_def and not isinstance(field_def["enum"], list):
+                            raise ValueError(f"Step '{step_name}' response_schema field '{field_name}' enum must be a list.")
+                if stop_on is not None and response_schema is None:
+                    raise ValueError(f"Step '{step_name}' has stop_on but no response_schema.")
+                if stop_on is not None and loop_on is not None:
+                    raise ValueError(f"Step '{step_name}' cannot have both stop_on and loop_on.")
+                if loop_on is not None and response_schema is not None:
+                    parts = loop_on.split("==", 1)
+                    if len(parts) != 2:
+                        raise ValueError(f"Step '{step_name}' loop_on must be 'field == value' when response_schema is set.")
+                    field = parts[0].strip()
+                    value = parts[1].strip()
+                    if field not in response_schema:
+                        raise ValueError(f"Step '{step_name}' loop_on references unknown field '{field}' not in response_schema.")
+                    field_def = response_schema[field]
+                    if "enum" in field_def and value not in field_def["enum"]:
+                        raise ValueError(f"Step '{step_name}' loop_on value '{value}' is not in enum {field_def['enum']}.")
                 steps.append({
                     "name": step_name,
                     "id": step_id,
@@ -98,6 +123,8 @@ def load_workflow(name: str, workflows_dir: Path = _HERE / "workflows") -> list[
                     "loop_on": loop_on,
                     "loop_to": loop_to,
                     "max_loops": max_loops,
+                    "response_schema": response_schema,
+                    "stop_on": stop_on,
                 })
                 seen_names.add(step_name)
                 if step_id:
