@@ -12,11 +12,21 @@ def test_load_workflow_finds_by_name(tmp_path):
     wf = tmp_path / "mywf.yaml"
     wf.write_text("name: mywf\nsteps:\n  - name: agent1\n  - name: agent2\n")
     from harness import load_workflow
-    steps = load_workflow("mywf", workflows_dir=tmp_path)
-    assert steps == [
+    result = load_workflow("mywf", workflows_dir=tmp_path)
+    assert result["description"] is None
+    assert result["steps"] == [
         {"name": "agent1", "id": None, "inputs": None, "prompt": None, "outputs": None, "when": None, "loop_on": None, "loop_to": None, "max_loops": None, "response_schema": None, "stop_on": None},
         {"name": "agent2", "id": None, "inputs": None, "prompt": None, "outputs": None, "when": None, "loop_on": None, "loop_to": None, "max_loops": None, "response_schema": None, "stop_on": None},
     ]
+
+
+def test_load_workflow_returns_description(tmp_path):
+    """Workflow description is returned when present."""
+    wf = tmp_path / "mywf.yaml"
+    wf.write_text("name: mywf\ndescription: Pick a card and fix it.\nsteps:\n  - name: agent1\n")
+    from harness import load_workflow
+    result = load_workflow("mywf", workflows_dir=tmp_path)
+    assert result["description"] == "Pick a card and fix it."
 
 
 def test_load_workflow_step_with_prompt(tmp_path):
@@ -26,7 +36,7 @@ def test_load_workflow_step_with_prompt(tmp_path):
         "name: mywf\nsteps:\n  - name: agent1\n    prompt: 'Focus on tests.'\n"
     )
     from harness import load_workflow
-    steps = load_workflow("mywf", workflows_dir=tmp_path)
+    steps = load_workflow("mywf", workflows_dir=tmp_path)["steps"]
     assert steps == [{"name": "agent1", "id": None, "inputs": None, "prompt": "Focus on tests.", "outputs": None, "when": None, "loop_on": None, "loop_to": None, "max_loops": None, "response_schema": None, "stop_on": None}]
 
 
@@ -35,7 +45,7 @@ def test_load_workflow_step_without_prompt_is_none(tmp_path):
     wf = tmp_path / "mywf.yaml"
     wf.write_text("name: mywf\nsteps:\n  - name: agent1\n")
     from harness import load_workflow
-    steps = load_workflow("mywf", workflows_dir=tmp_path)
+    steps = load_workflow("mywf", workflows_dir=tmp_path)["steps"]
     assert steps[0]["prompt"] is None
 
 
@@ -96,7 +106,8 @@ def test_main_workflow_subcommand(monkeypatch):
     # Mock load_workflow and run_pipeline
     with patch("harness.load_workflow") as mock_load_wf, \
          patch("harness.run_pipeline") as mock_run_pipeline:
-        mock_load_wf.return_value = [{"name": "agent1", "prompt": None}, {"name": "agent2", "prompt": None}]
+        mock_steps = [{"name": "agent1", "prompt": None}, {"name": "agent2", "prompt": None}]
+        mock_load_wf.return_value = {"description": None, "steps": mock_steps}
 
         # Set sys.argv for argparse
         test_argv = ["harness.py", "workflow", "example", "Fix the bug"]
@@ -108,10 +119,47 @@ def test_main_workflow_subcommand(monkeypatch):
         mock_load_wf.assert_called_once_with("example")
         # Assert run_pipeline was called with steps and prompt
         mock_run_pipeline.assert_called_once_with(
-            [{"name": "agent1", "prompt": None}, {"name": "agent2", "prompt": None}],
+            mock_steps,
             "Fix the bug",
             workflow_name="example",
         )
+
+
+def test_main_workflow_uses_description_as_prompt_fallback(monkeypatch):
+    """main() uses workflow description when no prompt is given."""
+    from unittest.mock import patch
+    from harness import main
+
+    with patch("harness.load_workflow") as mock_load_wf, \
+         patch("harness.run_pipeline") as mock_run_pipeline:
+        mock_steps = [{"name": "agent1", "prompt": None}]
+        mock_load_wf.return_value = {"description": "Pick a card and fix it.", "steps": mock_steps}
+
+        test_argv = ["harness.py", "workflow", "example"]
+        monkeypatch.setattr(sys, "argv", test_argv)
+
+        main()
+
+        mock_run_pipeline.assert_called_once_with(
+            mock_steps,
+            "Pick a card and fix it.",
+            workflow_name="example",
+        )
+
+
+def test_main_workflow_no_prompt_no_description_errors(monkeypatch):
+    """main() errors when no prompt and no description."""
+    from unittest.mock import patch
+    from harness import main
+
+    with patch("harness.load_workflow") as mock_load_wf:
+        mock_load_wf.return_value = {"description": None, "steps": [{"name": "agent1", "prompt": None}]}
+
+        test_argv = ["harness.py", "workflow", "example"]
+        monkeypatch.setattr(sys, "argv", test_argv)
+
+        with pytest.raises(SystemExit):
+            main()
 
 
 def _agent_config():
@@ -205,7 +253,7 @@ def test_load_workflow_step_with_loop_fields(tmp_path):
         "    max_loops: 2\n"
     )
     from harness import load_workflow
-    steps = load_workflow("mywf", workflows_dir=tmp_path)
+    steps = load_workflow("mywf", workflows_dir=tmp_path)["steps"]
     assert steps[1]["loop_on"] == "UNAPPROVED"
     assert steps[1]["loop_to"] == "implementer"
     assert steps[1]["max_loops"] == 2
@@ -222,7 +270,7 @@ def test_load_workflow_step_loop_default_max_loops(tmp_path):
         "    loop_to: implementer\n"
     )
     from harness import load_workflow
-    steps = load_workflow("mywf", workflows_dir=tmp_path)
+    steps = load_workflow("mywf", workflows_dir=tmp_path)["steps"]
     assert steps[1]["max_loops"] == 3
 
 
@@ -231,7 +279,7 @@ def test_load_workflow_step_no_loop_fields_are_none(tmp_path):
     wf = tmp_path / "mywf.yaml"
     wf.write_text("name: mywf\nsteps:\n  - name: agent1\n")
     from harness import load_workflow
-    steps = load_workflow("mywf", workflows_dir=tmp_path)
+    steps = load_workflow("mywf", workflows_dir=tmp_path)["steps"]
     assert steps[0]["loop_on"] is None
     assert steps[0]["loop_to"] is None
     assert steps[0]["max_loops"] is None
@@ -583,7 +631,7 @@ def test_load_workflow_step_with_outputs(tmp_path):
         "      summary: text\n"
     )
     from harness import load_workflow
-    steps = load_workflow("mywf", workflows_dir=tmp_path)
+    steps = load_workflow("mywf", workflows_dir=tmp_path)["steps"]
     assert steps[0]["outputs"] == {"plan": "json", "summary": "text"}
 
 
@@ -592,7 +640,7 @@ def test_load_workflow_step_without_outputs_is_none(tmp_path):
     wf = tmp_path / "mywf.yaml"
     wf.write_text("name: mywf\nsteps:\n  - name: agent1\n")
     from harness import load_workflow
-    steps = load_workflow("mywf", workflows_dir=tmp_path)
+    steps = load_workflow("mywf", workflows_dir=tmp_path)["steps"]
     assert steps[0]["outputs"] is None
 
 
@@ -690,7 +738,7 @@ def test_load_workflow_step_with_when(tmp_path):
         "    when: 'REVISION_NEEDED in review'\n"
     )
     from harness import load_workflow
-    steps = load_workflow("mywf", workflows_dir=tmp_path)
+    steps = load_workflow("mywf", workflows_dir=tmp_path)["steps"]
     assert steps[1]["when"] == "REVISION_NEEDED in review"
 
 
@@ -816,7 +864,7 @@ def test_load_workflow_inputs_can_reference_artifact_names(tmp_path):
         "    inputs: [plan]\n"
     )
     from harness import load_workflow
-    steps = load_workflow("mywf", workflows_dir=tmp_path)
+    steps = load_workflow("mywf", workflows_dir=tmp_path)["steps"]
     assert steps[1]["inputs"] == ["plan"]
 
 
@@ -940,7 +988,7 @@ def test_load_workflow_step_with_response_schema(tmp_path):
         "        type: string\n"
     )
     from harness import load_workflow
-    steps = load_workflow("mywf", workflows_dir=tmp_path)
+    steps = load_workflow("mywf", workflows_dir=tmp_path)["steps"]
     assert steps[0]["response_schema"] == {
         "decision": {"type": "string", "enum": ["APPROVED", "REJECTED"]},
         "feedback": {"type": "string"},
@@ -952,7 +1000,7 @@ def test_load_workflow_step_without_response_schema_is_none(tmp_path):
     wf = tmp_path / "mywf.yaml"
     wf.write_text("name: mywf\nsteps:\n  - name: agent1\n")
     from harness import load_workflow
-    steps = load_workflow("mywf", workflows_dir=tmp_path)
+    steps = load_workflow("mywf", workflows_dir=tmp_path)["steps"]
     assert steps[0]["response_schema"] is None
     assert steps[0]["stop_on"] is None
 
@@ -1060,7 +1108,7 @@ def test_load_workflow_loop_on_with_schema_valid(tmp_path):
         "    loop_to: implementer\n"
     )
     from harness import load_workflow
-    steps = load_workflow("mywf", workflows_dir=tmp_path)
+    steps = load_workflow("mywf", workflows_dir=tmp_path)["steps"]
     assert steps[1]["loop_on"] == "decision == REJECTED"
     assert steps[1]["response_schema"] is not None
 
@@ -1144,6 +1192,31 @@ def test_run_pipeline_stop_on_structured_result(tmp_path):
     def fake_agent_loop(user_message, messages, **kwargs):
         call_count[0] += 1
         messages.append({"role": "assistant", "content": "No cards found."})
+        return {"result": {"status": "STOP", "context": ""}}
+
+    steps = [
+        {"name": "agent1", "prompt": None, "response_schema": {"status": {"type": "string", "enum": ["FOUND", "STOP"]}, "context": {"type": "string"}}, "stop_on": "status == STOP"},
+        {"name": "agent2", "prompt": None},
+    ]
+
+    with patch("harness.load_agent", return_value=_agent_config()), \
+         patch("harness.agent_loop", side_effect=fake_agent_loop), \
+         patch("harness.build_mcp_clients", return_value=[]):
+        run_pipeline(steps, "Do the thing", traces_dir=tmp_path)
+
+    assert call_count[0] == 1
+
+
+def test_run_pipeline_stop_on_structured_result_no_text_output(tmp_path):
+    """Pipeline exits early on stop_on even when agent produces no text output."""
+    from unittest.mock import patch
+    from harness import run_pipeline
+
+    call_count = [0]
+
+    def fake_agent_loop(user_message, messages, **kwargs):
+        call_count[0] += 1
+        # No text content appended — only structured result via submit_result
         return {"result": {"status": "STOP", "context": ""}}
 
     steps = [

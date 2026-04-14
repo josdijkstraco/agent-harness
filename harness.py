@@ -46,11 +46,17 @@ class StepConfig(TypedDict):
     stop_on: NotRequired[str | None]
 
 
-def load_workflow(name: str, workflows_dir: Path = _HERE / "workflows") -> list[StepConfig]:
+class WorkflowConfig(TypedDict):
+    description: str | None
+    steps: list[StepConfig]
+
+
+def load_workflow(name: str, workflows_dir: Path = _HERE / "workflows") -> WorkflowConfig:
     """Scan workflows_dir for a YAML whose name: field matches name."""
     for path in sorted(workflows_dir.glob("*.yaml")):
         data = yaml.safe_load(path.read_text())
         if data.get("name") == name:
+            description: str | None = data.get("description") or None
             steps: list[StepConfig] = []
             seen_names: set[str] = set()
             seen_ids: set[str] = set()
@@ -129,7 +135,7 @@ def load_workflow(name: str, workflows_dir: Path = _HERE / "workflows") -> list[
                 seen_names.add(step_name)
                 if step_id:
                     seen_ids.add(step_id)
-            return steps
+            return {"description": description, "steps": steps}
     raise ValueError(f"No workflow named '{name}' found in {workflows_dir}/")
 
 
@@ -306,6 +312,16 @@ def run_pipeline(steps: list[StepConfig], command: str, traces_dir: str | Path =
                     trace.status = "cancelled"
                     print("\nPipeline cancelled.", file=sys.stderr)
                     sys.exit(0)
+                structured_result = usage.get("result")
+                stop_on = step.get("stop_on")
+                if stop_on and structured_result and eval_condition(stop_on, structured_result):
+                    print("Nothing to do.", file=sys.stderr)
+                    trace.log(step=step_label, event="step_end", output_preview="(stop_on triggered)",
+                              duration=time.time() - step_start_time, cost=cost)
+                    trace.save_snapshot(step_index, step_name, messages, traces_dir=traces_dir)
+                    print(f"\n[total usage]  in={total_input_tokens:,}  out={total_output_tokens:,}  cost=${total_cost:.4f}")
+                    trace.status = "completed"
+                    return
                 step_output: str | None = None
                 for msg in reversed(messages):
                     if msg["role"] == "assistant" and msg.get("content"):
@@ -331,14 +347,7 @@ def run_pipeline(steps: list[StepConfig], command: str, traces_dir: str | Path =
                           duration=time.time() - step_start_time, cost=cost)
                 trace.save_snapshot(step_index, step_name, messages, traces_dir=traces_dir)
 
-                structured_result = usage.get("result")
-                stop_on = step.get("stop_on")
-                if stop_on and structured_result and eval_condition(stop_on, structured_result):
-                    print("Nothing to do.", file=sys.stderr)
-                    print(f"\n[total usage]  in={total_input_tokens:,}  out={total_output_tokens:,}  cost=${total_cost:.4f}")
-                    trace.status = "completed"
-                    return
-                elif not stop_on and "STOP" in (step_output or ""):
+                if not stop_on and "STOP" in (step_output or ""):
                     print("Nothing to do.", file=sys.stderr)
                     print(f"\n[total usage]  in={total_input_tokens:,}  out={total_output_tokens:,}  cost=${total_cost:.4f}")
                     trace.status = "completed"
@@ -417,7 +426,8 @@ def _replay(trace_id: str, from_step: int, traces_dir: str, workflows_dir: str) 
     from trace import Trace
 
     t = Trace.load(trace_id, traces_dir=traces_dir)
-    all_steps = load_workflow(t.workflow, workflows_dir=Path(workflows_dir))
+    wf = load_workflow(t.workflow, workflows_dir=Path(workflows_dir))
+    all_steps = wf["steps"]
     if from_step >= len(all_steps):
         raise ValueError(f"--from-step {from_step} is out of range (workflow has {len(all_steps)} steps)")
     remaining_steps = all_steps[from_step:]
@@ -649,13 +659,15 @@ def main() -> None:
             else:
                 _run_agent_repl(args.name, model_override=args.model)
         elif args.subcommand == "workflow":
-            step_configs = load_workflow(args.name)
+            wf = load_workflow(args.name)
+            step_configs = wf["steps"]
             if args.dry_run:
                 dry_run_pipeline(args.name, step_configs)
             else:
-                if not args.prompt:
-                    parser.error("prompt is required unless --dry-run is set")
-                run_pipeline(step_configs, args.prompt, workflow_name=args.name)
+                prompt = args.prompt or wf["description"]
+                if not prompt:
+                    parser.error("prompt is required when workflow has no description")
+                run_pipeline(step_configs, prompt, workflow_name=args.name)
         elif args.subcommand == "trace":
             if args.trace_action == "list":
                 _trace_list(args.traces_dir)
