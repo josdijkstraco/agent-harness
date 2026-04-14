@@ -244,20 +244,88 @@ def run_pipeline(steps: list[StepConfig], command: str, traces_dir: str | Path =
         trace.save(traces_dir=traces_dir)
 
 
+def _trace_list(traces_dir: str) -> None:
+    """List recent traces."""
+    import datetime
+    from trace import Trace
+
+    traces_path = Path(traces_dir)
+    if not traces_path.is_dir():
+        print("No traces found.")
+        return
+    trace_files = sorted(traces_path.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not trace_files:
+        print("No traces found.")
+        return
+    print(f"{'ID':<10} {'Workflow':<20} {'Status':<12} {'Steps':>5} {'Cost':>10} {'Duration':>10} {'Started'}")
+    for tf in trace_files:
+        t = Trace.load(tf.stem, traces_dir=traces_dir)
+        row = t.summary_row()
+        started = datetime.datetime.fromtimestamp(row["started_at"]).strftime("%Y-%m-%d %H:%M")
+        duration_s = f"{row['duration']:.0f}s"
+        print(f"{row['id']:<10} {row['workflow']:<20} {row['status']:<12} {row['steps']:>5} ${row['cost']:>9.4f} {duration_s:>10} {started}")
+
+
+def _trace_show(trace_id: str, traces_dir: str) -> None:
+    """Show trace detail."""
+    from trace import Trace
+
+    t = Trace.load(trace_id, traces_dir=traces_dir)
+    print(t.format_detail())
+
+
+def _replay(trace_id: str, from_step: int, traces_dir: str, workflows_dir: str) -> None:
+    """Replay a pipeline from a specific step."""
+    from trace import Trace
+
+    t = Trace.load(trace_id, traces_dir=traces_dir)
+    all_steps = load_workflow(t.workflow, workflows_dir=Path(workflows_dir))
+    if from_step >= len(all_steps):
+        raise ValueError(f"--from-step {from_step} is out of range (workflow has {len(all_steps)} steps)")
+    remaining_steps = all_steps[from_step:]
+    run_pipeline(remaining_steps, t.command, traces_dir=traces_dir, workflow_name=t.workflow)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run agent pipelines")
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
 
+    # workflow subcommand
     wf = subparsers.add_parser("workflow", help="Run a workflow with an ad-hoc prompt")
     wf.add_argument("name", help="workflow name")
     wf.add_argument("prompt", help="initial prompt to send to the first agent")
+
+    # trace subcommand
+    tr = subparsers.add_parser("trace", help="Inspect traces")
+    tr_sub = tr.add_subparsers(dest="trace_action", required=True)
+
+    tr_list = tr_sub.add_parser("list", help="List recent traces")
+    tr_list.add_argument("--traces-dir", default="traces", help="traces directory")
+
+    tr_show = tr_sub.add_parser("show", help="Show trace detail")
+    tr_show.add_argument("trace_id", help="trace ID")
+    tr_show.add_argument("--traces-dir", default="traces", help="traces directory")
+
+    # replay subcommand
+    rp = subparsers.add_parser("replay", help="Replay a pipeline from a specific step")
+    rp.add_argument("trace_id", help="trace ID to replay from")
+    rp.add_argument("--from-step", type=int, required=True, help="step index to resume from")
+    rp.add_argument("--traces-dir", default="traces", help="traces directory")
+    rp.add_argument("--workflows-dir", default=str(_HERE / "workflows"), help="workflows directory")
 
     args = parser.parse_args()
 
     try:
         if args.subcommand == "workflow":
             step_names = load_workflow(args.name)
-            run_pipeline(step_names, args.prompt)
+            run_pipeline(step_names, args.prompt, workflow_name=args.name)
+        elif args.subcommand == "trace":
+            if args.trace_action == "list":
+                _trace_list(args.traces_dir)
+            elif args.trace_action == "show":
+                _trace_show(args.trace_id, args.traces_dir)
+        elif args.subcommand == "replay":
+            _replay(args.trace_id, args.from_step, args.traces_dir, args.workflows_dir)
         else:
             parser.error(f"Unknown subcommand: {args.subcommand}")
     except Exception as e:

@@ -110,6 +110,7 @@ def test_main_workflow_subcommand(monkeypatch):
         mock_run_pipeline.assert_called_once_with(
             [{"name": "agent1", "prompt": None}, {"name": "agent2", "prompt": None}],
             "Fix the bug",
+            workflow_name="example",
         )
 
 
@@ -507,5 +508,102 @@ def test_run_pipeline_trace_on_failure(tmp_path):
     assert len(trace_files) == 1
     data = json.loads(trace_files[0].read_text())
     assert data["status"] == "failed"
+
+
+def test_trace_list_command(tmp_path, monkeypatch, capsys):
+    """trace list subcommand prints a summary table of traces."""
+    import json
+    from harness import main
+
+    trace_data = {
+        "id": "abc12345",
+        "workflow": "example",
+        "command": "Fix bug",
+        "started_at": 1000.0,
+        "status": "completed",
+        "events": [
+            {"timestamp": 1000.0, "step": "0:planner", "event": "step_start", "data": {}},
+            {"timestamp": 1001.0, "step": None, "event": "pipeline_end",
+             "data": {"total_cost": 0.0342, "duration": 45.0, "total_input": 1000, "total_output": 500, "status": "completed"}},
+        ],
+    }
+    (tmp_path / "abc12345.json").write_text(json.dumps(trace_data))
+
+    monkeypatch.setattr(sys, "argv", ["harness.py", "trace", "list", "--traces-dir", str(tmp_path)])
+    main()
+
+    captured = capsys.readouterr()
+    assert "abc12345" in captured.out
+    assert "example" in captured.out
+    assert "completed" in captured.out
+
+
+def test_trace_show_command(tmp_path, monkeypatch, capsys):
+    """trace show subcommand prints detail view of a trace."""
+    import json
+    from harness import main
+
+    trace_data = {
+        "id": "abc12345",
+        "workflow": "example",
+        "command": "Fix bug",
+        "started_at": 1000.0,
+        "status": "completed",
+        "events": [
+            {"timestamp": 1000.0, "step": None, "event": "pipeline_start", "data": {"workflow": "example", "command": "Fix bug"}},
+            {"timestamp": 1000.1, "step": "0:planner", "event": "step_start", "data": {"model": "qwen", "tools": ["read_file"]}},
+            {"timestamp": 1000.5, "step": "0:planner", "event": "step_end", "data": {"output_preview": "Here is the plan.", "duration": 3.4, "cost": 0.005}},
+            {"timestamp": 1001.0, "step": None, "event": "pipeline_end",
+             "data": {"total_cost": 0.005, "duration": 3.4, "total_input": 500, "total_output": 200, "status": "completed"}},
+        ],
+    }
+    (tmp_path / "abc12345.json").write_text(json.dumps(trace_data))
+
+    monkeypatch.setattr(sys, "argv", ["harness.py", "trace", "show", "abc12345", "--traces-dir", str(tmp_path)])
+    main()
+
+    captured = capsys.readouterr()
+    assert "abc12345" in captured.out
+    assert "planner" in captured.out
+    assert "Here is the plan." in captured.out
+
+
+def test_replay_command(tmp_path, monkeypatch):
+    """replay subcommand loads trace and re-runs from given step."""
+    import json
+    from unittest.mock import patch as mock_patch
+    from harness import main
+
+    trace_data = {
+        "id": "abc12345",
+        "workflow": "example",
+        "command": "Fix bug",
+        "started_at": 1000.0,
+        "status": "completed",
+        "events": [],
+    }
+    (tmp_path / "abc12345.json").write_text(json.dumps(trace_data))
+
+    wf_dir = tmp_path / "workflows"
+    wf_dir.mkdir()
+    (wf_dir / "example.yaml").write_text("name: example\nsteps:\n  - name: planner\n  - name: implementer\n")
+
+    captured_args = {}
+
+    def fake_run_pipeline(steps, command, **kwargs):
+        captured_args["steps"] = steps
+        captured_args["command"] = command
+        captured_args.update(kwargs)
+
+    monkeypatch.setattr(sys, "argv", [
+        "harness.py", "replay", "abc12345", "--from-step", "1",
+        "--traces-dir", str(tmp_path), "--workflows-dir", str(wf_dir),
+    ])
+
+    with mock_patch("harness.run_pipeline", side_effect=fake_run_pipeline):
+        main()
+
+    assert len(captured_args["steps"]) == 1
+    assert captured_args["steps"][0]["name"] == "implementer"
 
 
