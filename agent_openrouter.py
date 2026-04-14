@@ -18,6 +18,7 @@ MODEL = "qwen/qwen3.6-plus"
 AVAILABLE_MODELS = [
     "qwen/qwen3.6-plus",
     "z-ai/glm-4.5-air:free",
+    "z-ai/glm-5v-turbo",
     "qwen/qwen3-235b-a22b:free",
     "google/gemini-2.5-flash-preview",
     "deepseek/deepseek-chat-v3-0324:free",
@@ -107,6 +108,8 @@ def agent_loop(
     cancel_event: threading.Event | None = None,
     mcp_clients: list | None = None,
     tools: list | None = None,
+    trace: object | None = None,
+    step_label: str | None = None,
 ) -> dict:
     initial_len = len(messages)
     messages.append({"role": "user", "content": user_message})
@@ -142,7 +145,9 @@ def agent_loop(
 
                 # Accumulate tool call deltas
                 for tc in delta.get("tool_calls", []):
-                    idx = tc["index"]
+                    idx = tc.get("index")
+                    if idx is None:
+                        continue
                     if idx not in tool_calls_acc:
                         tool_calls_acc[idx] = {
                             "id": tc.get("id", ""),
@@ -168,6 +173,12 @@ def agent_loop(
             total_output += usage.get("completion_tokens", 0)
             total_cost += usage.get("cost", 0.0)
 
+            if trace is not None:
+                trace.log(step=step_label, event="api_call",
+                          input_tokens=usage.get("prompt_tokens", 0),
+                          output_tokens=usage.get("completion_tokens", 0),
+                          cost=usage.get("cost", 0.0))
+
             content = "".join(content_parts) or None
             tool_calls = [tool_calls_acc[i] for i in sorted(tool_calls_acc)] or None
             message: dict = {"role": "assistant"}
@@ -184,12 +195,30 @@ def agent_loop(
                 tool_results = []
                 for tool_call in tool_calls:
                     name = tool_call["function"]["name"]
-                    params = json.loads(tool_call["function"]["arguments"])
+                    raw_args = tool_call["function"]["arguments"]
+                    try:
+                        params = json.loads(raw_args)
+                    except json.JSONDecodeError as e:
+                        print(f"  [Error: malformed tool call arguments for '{name}': {e}]")
+                        print(f"  Raw arguments: {raw_args[:200]}")
+                        tool_results.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call["id"],
+                            "content": f"[AGENT_ERROR] Failed to parse tool arguments for '{name}': {e}",
+                        })
+                        continue
                     params_str = str(params)
                     if len(params_str) > 50:
                         params_str = params_str[:50] + "..."
                     print(f"  [Tool: {name}], params: {params_str}")
+                    if trace is not None:
+                        trace.log(step=step_label, event="tool_call", tool=name, params=params)
                     result = execute_tool(name, params, tool_handlers, mcp_clients)
+                    if trace is not None:
+                        from trace import _preview
+                        trace.log(step=step_label, event="tool_result", tool=name,
+                                  result_preview=_preview(result),
+                                  error=result if result.startswith("Error:") else None)
                     tool_results.append({
                         "role": "tool",
                         "tool_call_id": tool_call["id"],

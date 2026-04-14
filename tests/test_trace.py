@@ -1,5 +1,6 @@
 import json
 import time
+from unittest.mock import patch
 
 from trace import TraceEvent, Trace
 
@@ -138,3 +139,45 @@ def test_trace_format_detail():
     assert "planner" in output
     assert "read_file" in output
     assert "Here is the plan." in output
+
+
+def test_agent_loop_logs_trace_events():
+    """agent_loop logs api_call, tool_call, and tool_result events to trace."""
+    from agent_openrouter import agent_loop
+    from tools import read_file as rf
+
+    trace = Trace(workflow="test", command="test")
+
+    call_count = [0]
+
+    def fake_call_api_streaming(messages, tools, model, cancel_event=None):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            yield {
+                "choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_1", "function": {"name": "read_file", "arguments": '{"path": "foo.py"}'}}]}, "finish_reason": None}],
+            }
+            yield {
+                "choices": [{"delta": {}, "finish_reason": "tool_calls"}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20, "cost": 0.001},
+            }
+        else:
+            yield {
+                "choices": [{"delta": {"content": "Done."}, "finish_reason": None}],
+            }
+            yield {
+                "choices": [{"delta": {}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 150, "completion_tokens": 10, "cost": 0.001},
+            }
+
+    messages = [{"role": "system", "content": "You are helpful."}]
+
+    with patch("agent_openrouter.call_api_streaming", side_effect=fake_call_api_streaming):
+        agent_loop("test prompt", messages, tools=[rf], trace=trace, step_label="0:planner")
+
+    event_types = [e.event for e in trace.events]
+    assert "api_call" in event_types
+    assert "tool_call" in event_types
+    assert "tool_result" in event_types
+    assert event_types.count("api_call") == 2
+    for e in trace.events:
+        assert e.step == "0:planner"
