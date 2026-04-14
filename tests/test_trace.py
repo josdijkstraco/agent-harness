@@ -73,3 +73,30 @@ def test_trace_load_roundtrips(tmp_path):
     assert len(loaded.events) == 2
     assert loaded.events[0].event == "step_start"
     assert loaded.events[1].data["tool"] == "read_file"
+
+
+def test_trace_save_snapshot(tmp_path):
+    trace = Trace(workflow="example", command="Fix bug")
+    messages = [
+        {"role": "system", "content": "You are a planner."},
+        {"role": "user", "content": "Fix bug"},
+        {"role": "assistant", "content": "Here is the plan."},
+    ]
+    trace.save_snapshot(step_index=0, step_name="planner", messages=messages, traces_dir=tmp_path)
+
+    snapshot_dir = tmp_path / f"{trace.id}_messages"
+    assert snapshot_dir.is_dir()
+    snapshot_file = snapshot_dir / "step_0_planner.json"
+    assert snapshot_file.exists()
+    loaded = json.loads(snapshot_file.read_text())
+    assert len(loaded) == 3
+    assert loaded[2]["content"] == "Here is the plan."
+
+
+def test_trace_load_snapshot(tmp_path):
+    trace = Trace(workflow="example", command="Fix bug")
+    messages = [{"role": "user", "content": "hello"}]
+    trace.save_snapshot(step_index=2, step_name="reviewer", messages=messages, traces_dir=tmp_path)
+
+    loaded = Trace.load_snapshot(trace.id, step_index=2, step_name="reviewer", traces_dir=tmp_path)
+    assert loaded == [{"role": "user", "content": "hello"}]

@@ -88,3 +88,18 @@ class Trace:
             for e in data["events"]
         ]
         return trace
+
+    def save_snapshot(self, step_index: int, step_name: str, messages: list, traces_dir: str | Path = "traces") -> Path:
+        """Save the messages list after a step completes."""
+        traces_dir = Path(traces_dir)
+        snapshot_dir = traces_dir / f"{self.id}_messages"
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+        path = snapshot_dir / f"step_{step_index}_{step_name}.json"
+        path.write_text(json.dumps(messages, indent=2))
+        return path
+
+    @staticmethod
+    def load_snapshot(trace_id: str, step_index: int, step_name: str, traces_dir: str | Path = "traces") -> list:
+        """Load a conversation snapshot for a specific step."""
+        path = Path(traces_dir) / f"{trace_id}_messages" / f"step_{step_index}_{step_name}.json"
+        return json.loads(path.read_text())
