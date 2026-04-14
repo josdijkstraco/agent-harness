@@ -157,6 +157,28 @@ def parse_artifacts(raw_output: str, declared_outputs: dict[str, str]) -> dict[s
     return artifacts
 
 
+def build_submit_result_tool(response_schema: dict) -> dict:
+    """Generate an OpenAI-format tool definition from a response_schema dict."""
+    properties = {}
+    for field_name, field_def in response_schema.items():
+        prop: dict = {"type": field_def["type"]}
+        if "enum" in field_def:
+            prop["enum"] = field_def["enum"]
+        properties[field_name] = prop
+    return {
+        "type": "function",
+        "function": {
+            "name": "submit_result",
+            "description": "Submit your final structured result for this step. You MUST call this tool when you have reached your conclusion.",
+            "parameters": {
+                "type": "object",
+                "properties": properties,
+                "required": list(response_schema.keys()),
+            },
+        },
+    }
+
+
 def run_pipeline(steps: list[StepConfig], command: str, traces_dir: str | Path = "traces", workflow_name: str = "pipeline") -> None:
     """Run command through each agent in sequence, chaining responses."""
     from trace import Trace, _preview

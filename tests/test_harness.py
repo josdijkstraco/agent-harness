@@ -859,3 +859,40 @@ def test_replay_command(tmp_path, monkeypatch):
     assert captured_args["steps"][0]["name"] == "implementer"
 
 
+# --- Structured outputs: build_submit_result_tool tests ---
+
+
+def test_build_submit_result_tool_generates_openai_format():
+    """build_submit_result_tool generates an OpenAI-compatible tool dict from response_schema."""
+    from harness import build_submit_result_tool
+
+    schema = {
+        "decision": {"type": "string", "enum": ["APPROVED", "REJECTED"]},
+        "feedback": {"type": "string"},
+    }
+    tool = build_submit_result_tool(schema)
+
+    assert tool["type"] == "function"
+    assert tool["function"]["name"] == "submit_result"
+    params = tool["function"]["parameters"]
+    assert params["type"] == "object"
+    assert params["properties"]["decision"] == {"type": "string", "enum": ["APPROVED", "REJECTED"]}
+    assert params["properties"]["feedback"] == {"type": "string"}
+    assert set(params["required"]) == {"decision", "feedback"}
+
+
+def test_build_submit_result_tool_number_and_boolean():
+    """build_submit_result_tool handles number and boolean types."""
+    from harness import build_submit_result_tool
+
+    schema = {
+        "confidence": {"type": "number"},
+        "approved": {"type": "boolean"},
+    }
+    tool = build_submit_result_tool(schema)
+
+    params = tool["function"]["parameters"]
+    assert params["properties"]["confidence"] == {"type": "number"}
+    assert params["properties"]["approved"] == {"type": "boolean"}
+
+
