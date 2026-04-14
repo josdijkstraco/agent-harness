@@ -1,3 +1,4 @@
+import json
 import time
 
 from trace import TraceEvent, Trace
@@ -40,3 +41,35 @@ def test_trace_to_dict():
     assert isinstance(d["id"], str)
     assert len(d["id"]) == 8
     assert d["events"] == []
+
+
+def test_trace_save_creates_json_file(tmp_path):
+    trace = Trace(workflow="example", command="Fix bug")
+    trace.log(step="0:planner", event="step_start", model="qwen")
+    trace.status = "completed"
+    trace.save(traces_dir=tmp_path)
+
+    trace_file = tmp_path / f"{trace.id}.json"
+    assert trace_file.exists()
+    data = json.loads(trace_file.read_text())
+    assert data["id"] == trace.id
+    assert data["workflow"] == "example"
+    assert data["status"] == "completed"
+    assert len(data["events"]) == 1
+
+
+def test_trace_load_roundtrips(tmp_path):
+    trace = Trace(workflow="example", command="Fix bug")
+    trace.log(step="0:planner", event="step_start", model="qwen")
+    trace.log(step="0:planner", event="tool_call", tool="read_file", params={"path": "x.py"})
+    trace.status = "completed"
+    trace.save(traces_dir=tmp_path)
+
+    loaded = Trace.load(trace.id, traces_dir=tmp_path)
+    assert loaded.id == trace.id
+    assert loaded.workflow == "example"
+    assert loaded.command == "Fix bug"
+    assert loaded.status == "completed"
+    assert len(loaded.events) == 2
+    assert loaded.events[0].event == "step_start"
+    assert loaded.events[1].data["tool"] == "read_file"

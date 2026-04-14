@@ -58,3 +58,33 @@ class Trace:
             "status": self.status,
             "events": [e.to_dict() for e in self.events],
         }
+
+    def save(self, traces_dir: str | Path = "traces") -> Path:
+        """Save trace to a JSON file. Returns the path to the saved file."""
+        traces_dir = Path(traces_dir)
+        traces_dir.mkdir(parents=True, exist_ok=True)
+        path = traces_dir / f"{self.id}.json"
+        path.write_text(json.dumps(self.to_dict(), indent=2))
+        return path
+
+    @classmethod
+    def load(cls, trace_id: str, traces_dir: str | Path = "traces") -> "Trace":
+        """Load a trace from its JSON file."""
+        path = Path(traces_dir) / f"{trace_id}.json"
+        data = json.loads(path.read_text())
+        trace = cls.__new__(cls)
+        trace.id = data["id"]
+        trace.workflow = data["workflow"]
+        trace.command = data["command"]
+        trace.started_at = data["started_at"]
+        trace.status = data["status"]
+        trace.events = [
+            TraceEvent(
+                timestamp=e["timestamp"],
+                step=e["step"],
+                event=e["event"],
+                data=e["data"],
+            )
+            for e in data["events"]
+        ]
+        return trace
