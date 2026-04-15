@@ -107,7 +107,7 @@ def main() -> None:
         result: dict = {}
 
         def _run() -> None:
-            result["usage"] = agent_loop(user_input, messages, model=current_model, cancel_event=cancel_event, mcp_clients=mcp_clients)
+            result["usage"] = agent_loop(user_input, messages, model=current_model, cancel_event=cancel_event, mcp_clients=None)
 
         agent_thread = threading.Thread(target=_run, daemon=True)
         watcher_thread = threading.Thread(target=watch_for_escape, args=(cancel_event, done_event), daemon=True)

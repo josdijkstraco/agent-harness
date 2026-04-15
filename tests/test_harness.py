@@ -1232,6 +1232,38 @@ def test_run_pipeline_stop_on_structured_result_no_text_output(tmp_path):
     assert call_count[0] == 1
 
 
+def test_run_pipeline_structured_result_used_as_output_when_no_text(tmp_path):
+    """When agent produces no text but has a structured result, the result is passed to the next step."""
+    from unittest.mock import patch
+    from harness import run_pipeline
+
+    captured_inputs = []
+
+    def fake_agent_loop(user_message, messages, **kwargs):
+        captured_inputs.append(user_message)
+        if len(captured_inputs) == 1:
+            # First step: structured result only, no text output
+            return {"result": {"status": "FOUND", "context": "Fix the login bug"}}
+        else:
+            # Second step: normal text output
+            messages.append({"role": "assistant", "content": "Plan created."})
+            return {}
+
+    steps = [
+        {"name": "agent1", "prompt": "Pick a card.", "response_schema": {"status": {"type": "string", "enum": ["FOUND", "STOP"]}, "context": {"type": "string"}}, "stop_on": "status == STOP"},
+        {"name": "agent2", "prompt": None},
+    ]
+
+    with patch("harness.load_agent", return_value=_agent_config()), \
+         patch("harness.agent_loop", side_effect=fake_agent_loop), \
+         patch("harness.build_mcp_clients", return_value=[]):
+        run_pipeline(steps, "Do the thing", traces_dir=tmp_path)
+
+    # The second step should receive the structured result as JSON, not the original command
+    assert "Fix the login bug" in captured_inputs[1]
+    assert "Do the thing" not in captured_inputs[1]
+
+
 def test_run_pipeline_loop_on_structured_result(tmp_path):
     """Pipeline loops back when loop_on condition matches structured result."""
     from unittest.mock import patch

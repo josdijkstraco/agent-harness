@@ -2,6 +2,7 @@
 """Agent pipeline executor — runs workflows through agent chains."""
 
 import argparse
+import json
 import re
 import sys
 import threading
@@ -327,6 +328,8 @@ def run_pipeline(steps: list[StepConfig], command: str, traces_dir: str | Path =
                     if msg["role"] == "assistant" and msg.get("content"):
                         step_output = msg["content"]
                         break
+                if step_output is None and structured_result:
+                    step_output = json.dumps(structured_result)
                 if step_output is None:
                     print(f"Warning: agent '{step_name}' produced no text output; passing previous input forward.", file=sys.stderr)
                     trace.log(step=step_label, event="step_end", output_preview="(no output)",

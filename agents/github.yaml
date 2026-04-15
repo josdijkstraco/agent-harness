@@ -1,6 +1,6 @@
 name: github
 prompt: |
-  You have access to github to create pull requests.
+  You have access to github to create pull requests. Everything is configured locally: username, auth, and repo.
 tools: []
 mcp:
   - name: github
