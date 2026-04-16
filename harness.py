@@ -2,7 +2,6 @@
 """Agent pipeline executor — runs workflows through agent chains."""
 
 import argparse
-import json
 import re
 import sys
 import threading
@@ -31,11 +30,12 @@ class AgentConfig(TypedDict):
     skill_names: list[str]
     mcp_names: list[str]
     model: str | None
+    output: dict | None
 
 
 class StepConfig(TypedDict):
-    name: str
-    id: NotRequired[str | None]
+    agent: str
+    id: str
     prompt: str | None
     inputs: NotRequired[list[str] | None]
     outputs: NotRequired[dict[str, str] | None]
@@ -43,12 +43,11 @@ class StepConfig(TypedDict):
     loop_on: NotRequired[str | None]
     loop_to: NotRequired[str | None]
     max_loops: NotRequired[int | None]
-    response_schema: NotRequired[dict | None]
+    output: NotRequired[dict | None]
     stop_on: NotRequired[str | None]
 
 
 class WorkflowConfig(TypedDict):
-    description: str | None
     steps: list[StepConfig]
 
 
@@ -57,14 +56,17 @@ def load_workflow(name: str, workflows_dir: Path = _HERE / "workflows") -> Workf
     for path in sorted(workflows_dir.glob("*.yaml")):
         data = yaml.safe_load(path.read_text())
         if data.get("name") == name:
-            description: str | None = data.get("description") or None
             steps: list[StepConfig] = []
-            seen_names: set[str] = set()
             seen_ids: set[str] = set()
             seen_artifact_names: set[str] = set()
             for step in data.get("steps", []):
-                step_name = step["name"]
-                step_id = step.get("id") or None
+                step_agent = step["agent"]
+                step_id = step.get("id") or step_agent
+                if step_id in seen_ids:
+                    raise ValueError(
+                        f"Step id '{step_id}' is not unique. "
+                        f"When the same agent appears multiple times, each step must have an explicit 'id:'."
+                    )
                 loop_on = step.get("loop_on") or None
                 loop_to = step.get("loop_to") or None
                 max_loops = step.get("max_loops")
@@ -74,54 +76,54 @@ def load_workflow(name: str, workflows_dir: Path = _HERE / "workflows") -> Workf
                 outputs: dict[str, str] | None = dict(raw_outputs) if raw_outputs else None
                 when: str | None = step.get("when") or None
                 if (loop_on is None) != (loop_to is None):
-                    raise ValueError(f"Step '{step_name}' must have both loop_on and loop_to, or neither.")
-                if loop_to is not None and loop_to not in seen_names:
-                    raise ValueError(f"Step '{step_name}' loop_to='{loop_to}' must refer to an earlier step.")
+                    raise ValueError(f"Step '{step_id}' must have both loop_on and loop_to, or neither.")
+                if loop_to is not None and loop_to not in seen_ids:
+                    raise ValueError(f"Step '{step_id}' loop_to='{loop_to}' must refer to an earlier step.")
                 if loop_on is not None and max_loops is None:
                     max_loops = 3
                 if loop_on is not None and when is not None:
-                    raise ValueError(f"Step '{step_name}' cannot have both loop_on and when.")
+                    raise ValueError(f"Step '{step_id}' cannot have both loop_on and when.")
                 if inputs is not None:
                     for ref in inputs:
                         if ref != "__input__" and ref not in seen_ids and ref not in seen_artifact_names:
-                            raise ValueError(f"Step '{step_name}' inputs references unknown id '{ref}'.")
+                            raise ValueError(f"Step '{step_id}' inputs references unknown id '{ref}'.")
                 if outputs is not None:
                     for artifact_name in outputs:
                         if artifact_name in seen_artifact_names or artifact_name in seen_ids:
-                            raise ValueError(f"Step '{step_name}' output '{artifact_name}' conflicts with an existing id or artifact name.")
+                            raise ValueError(f"Step '{step_id}' output '{artifact_name}' conflicts with an existing id or artifact name.")
                         seen_artifact_names.add(artifact_name)
                 if when is not None:
                     m = re.match(r'^(.+?)\s+in\s+(\w+)$', when)
                     if not m:
-                        raise ValueError(f"Step '{step_name}' when='{when}' must be 'PATTERN in step_id'.")
+                        raise ValueError(f"Step '{step_id}' when='{when}' must be 'PATTERN in step_id'.")
                     ref_id = m.group(2)
                     if ref_id not in seen_ids and ref_id not in seen_artifact_names:
-                        raise ValueError(f"Step '{step_name}' when references unknown id '{ref_id}'.")
-                response_schema: dict | None = step.get("response_schema") or None
+                        raise ValueError(f"Step '{step_id}' when references unknown id '{ref_id}'.")
+                output: dict | None = step.get("output") or None
                 stop_on: str | None = step.get("stop_on") or None
-                if response_schema is not None:
-                    for field_name, field_def in response_schema.items():
+                if output is not None:
+                    for field_name, field_def in output.items():
                         if "type" not in field_def:
-                            raise ValueError(f"Step '{step_name}' response_schema field '{field_name}' must have a 'type'.")
+                            raise ValueError(f"Step '{step_id}' output field '{field_name}' must have a 'type'.")
                         if "enum" in field_def and not isinstance(field_def["enum"], list):
-                            raise ValueError(f"Step '{step_name}' response_schema field '{field_name}' enum must be a list.")
-                if stop_on is not None and response_schema is None:
-                    raise ValueError(f"Step '{step_name}' has stop_on but no response_schema.")
+                            raise ValueError(f"Step '{step_id}' output field '{field_name}' enum must be a list.")
+                if stop_on is not None and output is None:
+                    raise ValueError(f"Step '{step_id}' has stop_on but no output.")
                 if stop_on is not None and loop_on is not None:
-                    raise ValueError(f"Step '{step_name}' cannot have both stop_on and loop_on.")
-                if loop_on is not None and response_schema is not None:
+                    raise ValueError(f"Step '{step_id}' cannot have both stop_on and loop_on.")
+                if loop_on is not None and output is not None:
                     parts = loop_on.split("==", 1)
                     if len(parts) != 2:
-                        raise ValueError(f"Step '{step_name}' loop_on must be 'field == value' when response_schema is set.")
+                        raise ValueError(f"Step '{step_id}' loop_on must be 'field == value' when output is set.")
                     field = parts[0].strip()
                     value = parts[1].strip()
-                    if field not in response_schema:
-                        raise ValueError(f"Step '{step_name}' loop_on references unknown field '{field}' not in response_schema.")
-                    field_def = response_schema[field]
+                    if field not in output:
+                        raise ValueError(f"Step '{step_id}' loop_on references unknown field '{field}' not in output.")
+                    field_def = output[field]
                     if "enum" in field_def and value not in field_def["enum"]:
-                        raise ValueError(f"Step '{step_name}' loop_on value '{value}' is not in enum {field_def['enum']}.")
+                        raise ValueError(f"Step '{step_id}' loop_on value '{value}' is not in enum {field_def['enum']}.")
                 steps.append({
-                    "name": step_name,
+                    "agent": step_agent,
                     "id": step_id,
                     "prompt": step.get("prompt") or None,
                     "inputs": inputs,
@@ -130,26 +132,25 @@ def load_workflow(name: str, workflows_dir: Path = _HERE / "workflows") -> Workf
                     "loop_on": loop_on,
                     "loop_to": loop_to,
                     "max_loops": max_loops,
-                    "response_schema": response_schema,
+                    "output": output,
                     "stop_on": stop_on,
                 })
-                seen_names.add(step_name)
-                if step_id:
-                    seen_ids.add(step_id)
-            return {"description": description, "steps": steps}
+                seen_ids.add(step_id)
+            return {"steps": steps}
     raise ValueError(f"No workflow named '{name}' found in {workflows_dir}/")
 
 
 def load_agent(name: str, agents_dir: Path = _HERE / "agents") -> AgentConfig:
     """Scan agents_dir for a YAML whose name: field matches name.
 
-    Returns dict with keys: prompt, tools (list[Tool]), tool_names (list[str]), model (str|None).
+    Returns dict with keys: prompt, tools (list[Tool]), tool_names (list[str]), model (str|None), output (dict|None).
     Exits on unknown tool names.
     """
     for path in sorted(agents_dir.glob("*.yaml")):
         data = yaml.safe_load(path.read_text())
         if data.get("name") == name:
-            tool_names = [t["name"] for t in data.get("tools", [])]
+            raw_tools = data.get("tools", [])
+            tool_names = [t if isinstance(t, str) else t["name"] for t in raw_tools]
             tools = []
             for tool_name in tool_names:
                 if tool_name not in _TOOL_MAP:
@@ -163,6 +164,7 @@ def load_agent(name: str, agents_dir: Path = _HERE / "agents") -> AgentConfig:
             for mcp_name in mcp_names:
                 if mcp_name not in _MCP_CONFIG:
                     raise ValueError(f"Agent '{name}' references unknown MCP server '{mcp_name}'")
+            output: dict | None = data.get("output") or None
             return {
                 "prompt": prompt,
                 "tools": tools,
@@ -170,6 +172,7 @@ def load_agent(name: str, agents_dir: Path = _HERE / "agents") -> AgentConfig:
                 "tool_names": tool_names,
                 "skill_names": skill_names,
                 "mcp_names": mcp_names,
+                "output": output,
             }
     raise ValueError(f"No agent named '{name}' found in {agents_dir}/")
 
@@ -227,7 +230,7 @@ def run_pipeline(steps: list[StepConfig], command: str, traces_dir: str | Path =
     """Run command through each agent in sequence, chaining responses."""
     from trace import Trace, _preview
 
-    step_index_map: dict[str, int] = {s["name"]: i for i, s in enumerate(steps)}
+    step_index_map: dict[str, int] = {s["id"]: i for i, s in enumerate(steps)}
     agent_cache: dict[str, AgentConfig] = {}
     loop_counts: dict[str, int] = {}
     # Outputs keyed by step id; "__input__" holds the original command.
@@ -245,11 +248,11 @@ def run_pipeline(steps: list[StepConfig], command: str, traces_dir: str | Path =
     try:
         while step_index < len(steps):
             step = steps[step_index]
-            step_name = step["name"]
-            step_id = step.get("id")
+            step_agent = step["agent"]
+            step_id = step.get("id") or step_agent
             step_prompt = step.get("prompt")
             input_ids = step.get("inputs")
-            step_label = f"{step_index}:{step_name}"
+            step_label = f"{step_index}:{step_id}"
 
             # Evaluate when condition — skip step if false.
             when_expr = step.get("when")
@@ -258,7 +261,7 @@ def run_pipeline(steps: list[StepConfig], command: str, traces_dir: str | Path =
                 if m:
                     pattern, ref_id = m.group(1).strip(), m.group(2)
                     if ref_id not in step_outputs or pattern not in step_outputs[ref_id]:
-                        print(f"[skip] '{step_name}' when condition not met: {when_expr}", file=sys.stderr)
+                        print(f"[skip] '{step_id}' when condition not met: {when_expr}", file=sys.stderr)
                         trace.log(step=step_label, event="step_skip", when=when_expr)
                         step_index += 1
                         continue
@@ -274,9 +277,9 @@ def run_pipeline(steps: list[StepConfig], command: str, traces_dir: str | Path =
                 current_input = last_output
 
             try:
-                if step_name not in agent_cache:
-                    agent_cache[step_name] = load_agent(step_name)
-                agent = agent_cache[step_name]
+                if step_id not in agent_cache:
+                    agent_cache[step_id] = load_agent(step_agent)
+                agent = agent_cache[step_id]
                 model = agent["model"] or DEFAULT_MODEL
                 messages: list = [{"role": "system", "content": agent["prompt"]}]
                 tools_str = ", ".join(agent["tool_names"]) or "none"
@@ -284,17 +287,23 @@ def run_pipeline(steps: list[StepConfig], command: str, traces_dir: str | Path =
                 mcp_names = agent["mcp_names"]
                 mcp_str = ", ".join(mcp_names) or "none"
                 mcp_clients = build_mcp_clients(mcp_names) if mcp_names else []
-                print(f"\n[agent: {step_name}]  tools: {tools_str}  |  skills: {skills_str}  |  mcp: {mcp_str}")
+                print(f"\n\033[1m[agent: {step_agent}]\033[0m  tools: {tools_str}  |  skills: {skills_str}  |  mcp: {mcp_str}")
                 effective_input = (step_prompt + "\n\n" + current_input) if step_prompt else current_input
-                print(f"[system prompt] {agent['prompt']}")
-                print(f"[user prompt] {effective_input}")
+                print("\033[36m--- system prompt ---\033[0m")
+                print(f"\033[2m{agent['prompt']}\033[0m")
+                print("\033[36m--- user prompt ---\033[0m")
+                print(f"\033[2m{effective_input}\033[0m")
+                print("\033[36m--- response ---\033[0m")
 
                 trace.log(step=step_label, event="step_start", model=model,
                           tools=agent["tool_names"], prompt_preview=_preview(effective_input))
                 step_start_time = time.time()
 
-                response_schema = step.get("response_schema")
-                submit_schema = build_submit_result_tool(response_schema) if response_schema else None
+                # Merge agent's canonical output schema with step-level override.
+                agent_output = agent.get("output") or {}
+                step_output_schema = step.get("output") or {}
+                effective_schema: dict | None = {**agent_output, **step_output_schema} or None
+                submit_schema = build_submit_result_tool(effective_schema) if effective_schema else None
                 try:
                     usage = agent_loop(effective_input, messages, model=model, tools=agent["tools"],
                                        mcp_clients=mcp_clients, trace=trace, step_label=step_label,
@@ -308,7 +317,7 @@ def run_pipeline(steps: list[StepConfig], command: str, traces_dir: str | Path =
                 total_input_tokens += in_tok
                 total_output_tokens += out_tok
                 total_cost += cost
-                print(f"[usage: {step_name}]  in={in_tok:,}  out={out_tok:,}  cost=${cost:.4f}")
+                print(f"[usage: {step_id}]  in={in_tok:,}  out={out_tok:,}  cost=${cost:.4f}")
                 if usage.get("cancelled"):
                     trace.status = "cancelled"
                     print("\nPipeline cancelled.", file=sys.stderr)
@@ -319,7 +328,7 @@ def run_pipeline(steps: list[StepConfig], command: str, traces_dir: str | Path =
                     print("Nothing to do.", file=sys.stderr)
                     trace.log(step=step_label, event="step_end", output_preview="(stop_on triggered)",
                               duration=time.time() - step_start_time, cost=cost)
-                    trace.save_snapshot(step_index, step_name, messages, traces_dir=traces_dir)
+                    trace.save_snapshot(step_index, step_id, messages, traces_dir=traces_dir)
                     print(f"\n[total usage]  in={total_input_tokens:,}  out={total_output_tokens:,}  cost=${total_cost:.4f}")
                     trace.status = "completed"
                     return
@@ -329,17 +338,16 @@ def run_pipeline(steps: list[StepConfig], command: str, traces_dir: str | Path =
                         step_output = msg["content"]
                         break
                 if step_output is None and structured_result:
-                    step_output = json.dumps(structured_result)
+                    step_output = "\n".join(str(v) for v in structured_result.values())
                 if step_output is None:
-                    print(f"Warning: agent '{step_name}' produced no text output; passing previous input forward.", file=sys.stderr)
+                    print(f"Warning: agent '{step_id}' produced no text output; passing previous input forward.", file=sys.stderr)
                     trace.log(step=step_label, event="step_end", output_preview="(no output)",
                               duration=time.time() - step_start_time, cost=cost)
-                    trace.save_snapshot(step_index, step_name, messages, traces_dir=traces_dir)
+                    trace.save_snapshot(step_index, step_id, messages, traces_dir=traces_dir)
                     step_index += 1
                     continue
                 last_output = step_output
-                if step_id:
-                    step_outputs[step_id] = step_output
+                step_outputs[step_id] = step_output
                 declared_outputs = step.get("outputs")
                 if declared_outputs:
                     artifacts = parse_artifacts(step_output, declared_outputs)
@@ -348,7 +356,7 @@ def run_pipeline(steps: list[StepConfig], command: str, traces_dir: str | Path =
 
                 trace.log(step=step_label, event="step_end", output_preview=_preview(step_output),
                           duration=time.time() - step_start_time, cost=cost)
-                trace.save_snapshot(step_index, step_name, messages, traces_dir=traces_dir)
+                trace.save_snapshot(step_index, step_id, messages, traces_dir=traces_dir)
 
                 if not stop_on and "STOP" in (step_output or ""):
                     print("Nothing to do.", file=sys.stderr)
@@ -360,24 +368,24 @@ def run_pipeline(steps: list[StepConfig], command: str, traces_dir: str | Path =
                 max_loops = step.get("max_loops")
                 if loop_on and loop_to:
                     loop_triggered = False
-                    if structured_result and response_schema:
+                    if structured_result and effective_schema:
                         loop_triggered = eval_condition(loop_on, structured_result)
                     else:
                         loop_triggered = loop_on in (step_output or "")
                     if loop_triggered:
-                        count = loop_counts.get(step_name, 0)
+                        count = loop_counts.get(step_id, 0)
                         if count < max_loops:
-                            loop_counts[step_name] = count + 1
-                            print(f"[loop] '{step_name}' triggered '{loop_on}' (loop {count + 1}/{max_loops}), jumping to '{loop_to}'", file=sys.stderr)
+                            loop_counts[step_id] = count + 1
+                            print(f"[loop] '{step_id}' triggered '{loop_on}' (loop {count + 1}/{max_loops}), jumping to '{loop_to}'", file=sys.stderr)
                             trace.log(step=step_label, event="loop", loop_on=loop_on, loop_to=loop_to,
                                       iteration=count + 1, max=max_loops)
                             step_index = step_index_map[loop_to]
                             continue
                         else:
-                            print(f"[loop] '{step_name}' hit max_loops={max_loops}; continuing to next step.", file=sys.stderr)
+                            print(f"[loop] '{step_id}' hit max_loops={max_loops}; continuing to next step.", file=sys.stderr)
                 step_index += 1
             except Exception:
-                print(f"\n[error: {step_name}] step failed", file=sys.stderr)
+                print(f"\n[error: {step_id}] step failed", file=sys.stderr)
                 print(f"\n[total usage]  in={total_input_tokens:,}  out={total_output_tokens:,}  cost=${total_cost:.4f}")
                 raise
 
@@ -446,7 +454,7 @@ def _run_agent_oneshot(name: str, prompt: str, model_override: str | None = None
     tools_str = ", ".join(agent["tool_names"]) or "none"
     skills_str = ", ".join(agent["skill_names"]) or "none"
     mcp_str = ", ".join(mcp_names) or "none"
-    print(f"[agent: {name}]  model: {model}  tools: {tools_str}  skills: {skills_str}  mcp: {mcp_str}")
+    print(f"\033[1m[agent: {name}]\033[0m  model: {model}  tools: {tools_str}  skills: {skills_str}  mcp: {mcp_str}")
 
     messages: list = [{"role": "system", "content": agent["prompt"]}]
     try:
@@ -495,7 +503,7 @@ def _run_agent_repl(name: str, model_override: str | None = None) -> None:
     tools_str = ", ".join(agent["tool_names"]) or "none"
     skills_str = ", ".join(agent["skill_names"]) or "none"
     mcp_str = ", ".join(mcp_names) or "none"
-    print(f"[agent: {name}]  model: {model}  tools: {tools_str}  skills: {skills_str}  mcp: {mcp_str}")
+    print(f"\033[1m[agent: {name}]\033[0m  model: {model}  tools: {tools_str}  skills: {skills_str}  mcp: {mcp_str}")
     print("Interactive mode (type 'exit' to quit, '/model' to switch, '/clear' to reset)")
 
     messages: list = [{"role": "system", "content": agent["prompt"]}]
@@ -577,8 +585,9 @@ def dry_run_pipeline(workflow_name: str, steps: list[StepConfig]) -> None:
     """Print resolved pipeline config without making any API calls."""
     print(f"\n  Pipeline: {workflow_name} ({len(steps)} steps)\n")
     for i, step in enumerate(steps):
-        agent = load_agent(step["name"])
-        print(f"    {i + 1}. {step['name']}")
+        agent = load_agent(step["agent"])
+        step_id = step.get("id") or step["agent"]
+        print(f"    {i + 1}. {step_id}  ({step['agent']})")
 
         model = agent["model"] or DEFAULT_MODEL
         print(f"       model: {model}")
@@ -667,10 +676,7 @@ def main() -> None:
             if args.dry_run:
                 dry_run_pipeline(args.name, step_configs)
             else:
-                prompt = args.prompt or wf["description"]
-                if not prompt:
-                    parser.error("prompt is required when workflow has no description")
-                run_pipeline(step_configs, prompt, workflow_name=args.name)
+                run_pipeline(step_configs, args.prompt or "", workflow_name=args.name)
         elif args.subcommand == "trace":
             if args.trace_action == "list":
                 _trace_list(args.traces_dir)

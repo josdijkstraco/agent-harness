@@ -7,12 +7,6 @@ prompt: |
   - When you need input from the user (questions, clarifications, approval), you MUST call the `ask_user` tool. Do NOT ask questions in plain text.
   - Use `ask_user` for every clarifying question — one call per question.
   - When brainstorming is complete, write the spec using `write_file`, then stop.
-tools:
-  - name: read_file
-  - name: write_file
-  - name: bash
-  - name: find_files
-  - name: ask_user
+tools: [read_file, write_file, bash, find_files, ask_user]
 skills:
-  - name: brainstorming
-    description: "You MUST use this before any creative work - creating features, building components, adding functionality, or modifying behavior. Explores user intent, requirements and design before implementation."
+  - brainstorming

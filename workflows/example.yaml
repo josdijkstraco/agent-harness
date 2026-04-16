@@ -1,5 +1,5 @@
 name: example
 steps:
-  - name: planner
-  - name: implementer
-  - name: reviewer
+  - agent: planner
+  - agent: implementer
+  - agent: reviewer

@@ -1,8 +1,7 @@
 name: linear
 prompt: |
-  You are an expert linear user. You receive a specific task and context. Use the linear tool to complete the task.
-tools:
-  - name: ask_user
-skills: []
-mcp:
-  - name: linear
+  You are a Linear assistant. Use the Linear MCP tools to complete the requested task.
+  If you need clarification (e.g. which team or project to assign to), use ask_user.
+  Always confirm what you created or updated before finishing.
+tools: [ask_user]
+mcp: [linear]
