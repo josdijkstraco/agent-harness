@@ -1,43 +1,38 @@
 name: pick-and-fix
-description: Pick a card and fix it.
 steps:
-  - name: linear
+  - agent: linear
     id: card
     prompt: |
       Pick a card from the 'Agent Harness' project that is in the 'todo' column
       and move it to the 'in progress' column. Your final response needs to include
       the context of the card. If you don't find any cards, call submit_result with status STOP.
-    response_schema:
-      status:
-        type: string
-        enum: [FOUND, STOP]
-      context:
-        type: string
+    output:
+      status: {type: string, enum: [FOUND, STOP]}
+      context: {type: string}
     stop_on: status == STOP
-  - name: planner
+
+  - agent: planner
     prompt: |
       Plan the fix for the request.
-  - name: implementer
+
+  - agent: implementer
     id: implementer
-    prompt: |
-      Implement the fix.
-  - name: reviewer
-    prompt: |
-      Review the fix. Call submit_result with your verdict.
-    response_schema:
-      decision:
-        type: string
-        enum: [APPROVED, REJECTED]
-      feedback:
-        type: string
+
+  - agent: reviewer
+    output:
+      decision: {type: string, enum: [APPROVED, REJECTED]}
+      feedback: {type: string}
     loop_on: decision == REJECTED
     loop_to: implementer
     max_loops: 3
-  - name: github
+
+  - agent: github
+    inputs: [implementer]
     prompt: |
       Create a pull request for the fix. Create a summary of the changes for this pull request.
-    inputs: [implementer]
-  - name: linear
+
+  - agent: linear
+    id: done
+    inputs: [card]
     prompt: |
       Move the card to the 'done' column.
-    inputs: [card]

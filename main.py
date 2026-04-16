@@ -20,6 +20,7 @@ from agent_openrouter import AVAILABLE_MODELS, MODEL, agent_loop
 from skills_loader import SKILLS, build_system_prompt
 from mcp_client import build_all_mcp_clients
 from repl_utils import COMMAND_COMPLETER, IS_TTY, status_text, watch_for_escape
+from logo import print_logo
 
 
 def select_model(current: str) -> str:
@@ -51,6 +52,7 @@ def main() -> None:
     parser.parse_args()
 
     if sys.stdout.isatty():
+        print_logo()
         print()
 
     mcp_clients = build_all_mcp_clients()
@@ -107,7 +109,7 @@ def main() -> None:
         result: dict = {}
 
         def _run() -> None:
-            result["usage"] = agent_loop(user_input, messages, model=current_model, cancel_event=cancel_event, mcp_clients=mcp_clients)
+            result["usage"] = agent_loop(user_input, messages, model=current_model, cancel_event=cancel_event, mcp_clients=None)
 
         agent_thread = threading.Thread(target=_run, daemon=True)
         watcher_thread = threading.Thread(target=watch_for_escape, args=(cancel_event, done_event), daemon=True)

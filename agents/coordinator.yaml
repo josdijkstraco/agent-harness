@@ -10,7 +10,4 @@ prompt: |
   If any delegation returns a response starting with [AGENT_ERROR], stop and report the error
   to the user — do not silently continue.
   Report the final outcome to the user.
-tools:
-  - name: read_file
-  - name: find_files
-skills: []
+tools: [read_file, find_files]

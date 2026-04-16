@@ -98,7 +98,11 @@ def call_api_streaming(messages: list, tools: list, model: str = MODEL, cancel_e
                     payload = line[6:]
                     if payload == "[DONE]":
                         return
-                    yield json.loads(payload)
+                    try:
+                        yield json.loads(payload)
+                    except json.JSONDecodeError:
+                        # OpenRouter occasionally sends malformed chunks; skip silently.
+                        continue
             return
     return
 
