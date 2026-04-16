@@ -1,6 +1,12 @@
 name: github
 prompt: |
-  You have access to github to create pull requests. Everything is configured locally: username, auth, and repo.
-tools: []
+  You have access to github to create pull requests.
+  The repo name is agent-harness.
+  The username is josdijkstraco.
+  You also have read_file and bash tools to inspect the local repository at /Users/jos/projects/agent-harness.
+  Use bash to run git commands (e.g. git log, git diff, git status) when you need repository information.
+tools:
+  - name: read_file
+  - name: bash
 mcp:
   - name: github

@@ -1,10 +1,63 @@
 """Tool definitions and handlers for the coding agent."""
 
 import glob
+import os
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
+
+
+ROOT_DIR = Path("/Users/jos/projects/agent-harness")
+
+
+def _validate_path(path: str) -> str | None:
+    """Validate that a resolved path is within ROOT_DIR. Returns error message or None."""
+    resolved = (ROOT_DIR / path).resolve()
+    try:
+        resolved.relative_to(ROOT_DIR.resolve())
+        return None
+    except ValueError:
+        return f"Error: Access denied. Path '{path}' resolves outside the root directory {ROOT_DIR}."
+
+
+def _validate_paths_in_command(command: str) -> str | None:
+    """Check if a shell command tries to access paths outside ROOT_DIR.
+    
+    This provides basic protection against common escape patterns. Not bulletproof
+    but catches the most obvious cases. Returns error message or None.
+    """
+    # Check for cd commands that go above root
+    cd_pattern = r'\bcd\s+([^\s;&|]+)'
+    for match in re.finditer(cd_pattern, command):
+        target = match.group(1)
+        if target.startswith('/') and not target.startswith(str(ROOT_DIR)):
+            return f"Error: Access denied. Cannot cd to directory outside {ROOT_DIR}."
+        resolved = (ROOT_DIR / target).resolve()
+        try:
+            resolved.relative_to(ROOT_DIR.resolve())
+        except ValueError:
+            return f"Error: Access denied. Cannot cd to '{target}' as it resolves outside {ROOT_DIR}."
+    
+    # Check for absolute paths that might access files outside root
+    abs_path_pattern = r'(?<!\w)(/[a-zA-Z0-9_./-]+)'
+    for match in re.finditer(abs_path_pattern, command):
+        abs_path = match.group(1)
+        # Allow paths within root
+        if abs_path.startswith(str(ROOT_DIR)):
+            continue
+        # Allow common system commands and special dirs
+        system_allowed = ['/dev/null', '/usr/bin/', '/bin/', '/usr/local/']
+        if any(abs_path.startswith(p) for p in system_allowed):
+            continue
+        # Block access to absolute paths outside root
+        try:
+            Path(abs_path).resolve().relative_to(ROOT_DIR.resolve())
+        except ValueError:
+            return f"Error: Access denied. Cannot access '{abs_path}' outside {ROOT_DIR}."
+    
+    return None
 
 
 @dataclass(frozen=True)
@@ -31,23 +84,49 @@ def make_schema(name: str, description: str, **params: str) -> dict:
 
 
 def handle_read_file(params: dict) -> str:
-    path = Path(params["path"])
-    if not path.exists():
-        return f"Error: File not found: {path}"
-    return path.read_text()
+    path = params["path"]
+    
+    error = _validate_path(path)
+    if error:
+        return error
+    
+    resolved = (ROOT_DIR / path).resolve()
+    
+    if not resolved.exists():
+        return f"Error: File not found: {resolved}"
+    if not resolved.is_file():
+        return f"Error: Not a file: {resolved}"
+    
+    return resolved.read_text()
 
 
 def handle_write_file(params: dict) -> str:
-    path = Path(params["path"])
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(params["content"])
-    return f"Successfully wrote {len(params['content'])} bytes to {path}"
+    path = params["path"]
+    
+    error = _validate_path(path)
+    if error:
+        return error
+    
+    resolved = (ROOT_DIR / path).resolve()
+    
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    resolved.write_text(params["content"])
+    return f"Successfully wrote {len(params['content'])} bytes to {resolved}"
 
 
 def handle_bash(params: dict) -> str:
+    command = params["command"]
+    
+    error = _validate_paths_in_command(command)
+    if error:
+        return error
+    
+    # Ensure command runs from within ROOT_DIR
+    original_cwd = os.getcwd()
     try:
+        os.chdir(ROOT_DIR)
         result = subprocess.run(
-            params["command"],
+            command,
             shell=True,
             capture_output=True,
             text=True,
@@ -61,13 +140,26 @@ def handle_bash(params: dict) -> str:
         return output or "(no output)"
     except subprocess.TimeoutExpired:
         return "Error: Command timed out after 30 seconds."
+    finally:
+        os.chdir(original_cwd)
 
 
 def handle_find_files(params: dict) -> str:
-    matches = glob.glob(params["pattern"], recursive=True)
+    pattern = params["pattern"]
+    
+    # Resolve glob relative to ROOT_DIR
+    full_pattern = str(ROOT_DIR / pattern)
+    matches = glob.glob(full_pattern, recursive=True)
+    
+    # Filter to only include paths within ROOT_DIR
+    matches = [m for m in matches if Path(m).resolve().is_relative_to(ROOT_DIR.resolve())]
+    
     if not matches:
         return "No files found."
-    return "\n".join(sorted(matches))
+    
+    # Return paths relative to ROOT_DIR for cleaner output
+    relative_paths = [str(Path(m).relative_to(ROOT_DIR)) for m in sorted(matches)]
+    return "\n".join(relative_paths)
 
 
 read_file = Tool(
