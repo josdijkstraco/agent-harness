@@ -20,7 +20,6 @@ from agent_openrouter import AVAILABLE_MODELS, MODEL, agent_loop
 from skills_loader import SKILLS, build_system_prompt
 from mcp_client import build_all_mcp_clients
 from repl_utils import COMMAND_COMPLETER, IS_TTY, status_text, watch_for_escape
-from logo import print_logo
 
 
 def select_model(current: str) -> str:
@@ -52,7 +51,6 @@ def main() -> None:
     parser.parse_args()
 
     if sys.stdout.isatty():
-        print_logo()
         print()
 
     mcp_clients = build_all_mcp_clients()
