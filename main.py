@@ -54,6 +54,7 @@ def main() -> None:
         print()
 
     mcp_clients = build_all_mcp_clients()
+    mcp_map: dict[str, object] = {client.name: client for client in mcp_clients}
     for client in mcp_clients:
         names = [t["function"]["name"] for t in client.tools]
         print(f"  [{client.name}] tools: {', '.join(names)}")
@@ -61,7 +62,7 @@ def main() -> None:
     skill_names = list(SKILLS.keys())
     system_prompt = build_system_prompt(skill_names)
 
-    print("Multi-Agent Harness (type 'exit' to quit, '/model' to switch, '/clear' to reset history)")
+    print("Multi-Agent Harness (type 'exit' to quit, '/model' to switch, '/clear' to reset history, '/mcp' to toggle MCP servers)")
     if skill_names:
         print("Loaded skills: " + ", ".join(skill_names))
     messages: list = [{"role": "system", "content": system_prompt}]
@@ -99,6 +100,29 @@ def main() -> None:
             turns = 0
             print("History cleared.")
             continue
+        parts = user_input.strip().split()
+        if parts[0] == "/mcp":
+            if len(parts) == 1:
+                if not mcp_clients:
+                    print("No MCP servers configured.")
+                else:
+                    for client in mcp_clients:
+                        status = "enabled" if client.enabled else "disabled"
+                        print(f"  {client.name}: {status}")
+            elif len(parts) == 3 and parts[1] in ("enable", "disable"):
+                name = parts[2]
+                client = mcp_map.get(name)
+                if client is None:
+                    print(f"MCP server '{name}' not found.")
+                else:
+                    if parts[1] == "enable":
+                        client.enabled = True
+                    else:
+                        client.enabled = False
+                    print(f"MCP '{name}' {'enabled' if client.enabled else 'disabled'}.")
+            else:
+                print("Usage: /mcp, /mcp enable <name>, /mcp disable <name>")
+            continue
         if not user_input.strip():
             continue
 
@@ -107,7 +131,7 @@ def main() -> None:
         result: dict = {}
 
         def _run() -> None:
-            result["usage"] = agent_loop(user_input, messages, model=current_model, cancel_event=cancel_event, mcp_clients=None)
+            result["usage"] = agent_loop(user_input, messages, model=current_model, cancel_event=cancel_event, mcp_clients=mcp_clients)
 
         agent_thread = threading.Thread(target=_run, daemon=True)
         watcher_thread = threading.Thread(target=watch_for_escape, args=(cancel_event, done_event), daemon=True)

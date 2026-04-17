@@ -9,7 +9,7 @@ import tty
 from prompt_toolkit.completion import WordCompleter
 
 IS_TTY = sys.stdout.isatty()
-COMMAND_COMPLETER = WordCompleter(["/model", "/clear"], sentence=True)
+COMMAND_COMPLETER = WordCompleter(["/model", "/clear", "/mcp"], sentence=True)
 
 
 def watch_for_escape(cancel_event: threading.Event, done_event: threading.Event) -> None:
