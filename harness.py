@@ -333,12 +333,13 @@ def run_pipeline(steps: list[StepConfig], command: str, traces_dir: str | Path =
                     trace.status = "completed"
                     return
                 step_output: str | None = None
-                for msg in reversed(messages):
-                    if msg["role"] == "assistant" and msg.get("content"):
-                        step_output = msg["content"]
-                        break
-                if step_output is None and structured_result:
-                    step_output = "\n".join(str(v) for v in structured_result.values())
+                if structured_result:
+                    step_output = "\n".join(f"{k}: {v}" for k, v in structured_result.items())
+                else:
+                    for msg in reversed(messages):
+                        if msg["role"] == "assistant" and msg.get("content"):
+                            step_output = msg["content"]
+                            break
                 if step_output is None:
                     print(f"Warning: agent '{step_id}' produced no text output; passing previous input forward.", file=sys.stderr)
                     trace.log(step=step_label, event="step_end", output_preview="(no output)",
