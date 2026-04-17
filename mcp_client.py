@@ -13,6 +13,7 @@ class MCPClient:
         self._proc: subprocess.Popen | None = None
         self._req_id = 0
         self._tool_schemas: list[dict] = []  # OpenAI-compatible schemas
+        self.enabled: bool = True
 
     # ── transport ──────────────────────────────────────────────────────────────
 

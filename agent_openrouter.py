@@ -58,6 +58,8 @@ def execute_tool(name: str, params: dict, tool_handlers: dict, mcp_clients: list
         except Exception as e:
             return f"Error: {e}"
     for client in (mcp_clients or []):
+        if not client.enabled:
+            continue
         if client.has_tool(name):
             try:
                 return client.call_tool(name, params)
@@ -125,6 +127,8 @@ def agent_loop(
     tool_handlers = {t.name: t.handler for t in active_tool_list}
     active_tools = [_to_openai_tool(t) for t in active_tool_list]
     for client in (mcp_clients or []):
+        if not client.enabled:
+            continue
         active_tools.extend(client.tools)
     if submit_result_schema is not None:
         active_tools.append(submit_result_schema)
