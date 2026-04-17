@@ -1,0 +1,5 @@
+name: hello
+prompt: |
+  Respond with exactly the text: Hello world
+  Do not include any other text, punctuation, or explanation.
+tools: []

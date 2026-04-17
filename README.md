@@ -131,7 +131,7 @@ steps:
     max_loops: 3                   # Max loop iterations (default: 3)
   - agent: github
     inputs: [implementer] # Pick specific earlier step outputs as input
-    when: FOUND in card   # Skip step unless condition holds (optional)
+    when: APPROVED in reviewer  # Skip step unless condition holds (optional)
 ```
 
 ### Step Fields

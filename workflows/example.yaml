@@ -1,5 +1,19 @@
-name: example
+name: example         # Unique identifier passed to harness.py
+description: "Optional"  # Human-readable description
 steps:
-  - agent: planner
+  - agent: planner        # Agent name (must exist in agents/)
+    id: planner           # Optional: tag this step's output for later reference
+    prompt: |             # Optional: step-specific prompt prepended to input
+      Plan the fix...
   - agent: implementer
+    id: implementer
   - agent: reviewer
+    output:               # Optional: step-level output schema (merged with agent's)
+      decision: {type: string, enum: [APPROVED, REJECTED]}
+      feedback: {type: string}
+    loop_on: decision == REJECTED  # Loop back when condition holds...
+    loop_to: implementer           # ...to this earlier step
+    max_loops: 3                   # Max loop iterations (default: 3)
+  - agent: github
+    inputs: [implementer] # Pick specific earlier step outputs as input
+    when: APPROVED in reviewer  # Skip step unless condition holds (optional)

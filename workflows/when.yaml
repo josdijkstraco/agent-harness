@@ -1,0 +1,7 @@
+name: when
+description: Picks ONE or TWO at random; prints "Hello world" only if ONE.
+steps:
+  - agent: random
+    id: random
+  - agent: hello
+    when: ONE in random

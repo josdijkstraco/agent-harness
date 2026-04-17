@@ -1,0 +1,8 @@
+name: random
+prompt: |
+  You are a random number picker. Pick ONE or TWO at random with equal
+  probability and submit your choice via submit_result in the `result`
+  field.
+tools: []
+output:
+  result: {type: string, enum: [ONE, TWO]}
