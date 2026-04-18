@@ -1,3 +1,4 @@
 name: brainstorm
 steps:
   - agent: brainstormer
+    inputs: [__input__]

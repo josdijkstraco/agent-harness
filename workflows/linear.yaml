@@ -1,3 +1,4 @@
 name: linear
 steps:
   - agent: linear
+    inputs: [__input__]

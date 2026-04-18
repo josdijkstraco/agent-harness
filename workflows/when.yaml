@@ -3,5 +3,7 @@ description: Picks ONE or TWO at random; prints "Hello world" only if ONE.
 steps:
   - agent: random
     id: random
+    inputs: [__input__]
   - agent: hello
+    inputs: [random]
     when: ONE in random

@@ -2,6 +2,8 @@
 """Agent pipeline executor — runs workflows through agent chains."""
 
 import argparse
+import datetime
+import os
 import re
 import sys
 import threading
@@ -37,7 +39,7 @@ class StepConfig(TypedDict):
     agent: str
     id: str
     prompt: str | None
-    inputs: NotRequired[list[str] | None]
+    inputs: list[str]
     outputs: NotRequired[dict[str, str] | None]
     when: NotRequired[str | None]
     loop_on: NotRequired[str | None]
@@ -59,6 +61,14 @@ def load_workflow(name: str, workflows_dir: Path = _HERE / "workflows") -> Workf
             steps: list[StepConfig] = []
             seen_ids: set[str] = set()
             seen_artifact_names: set[str] = set()
+            # Pre-collect all step ids and declared artifact names so inputs can forward-reference
+            # a step that executes later (e.g., implementer consuming reviewer's feedback on loop-back).
+            all_ids: set[str] = {"__input__"}
+            all_artifact_names: set[str] = set()
+            for step in data.get("steps", []):
+                all_ids.add(step.get("id") or step["agent"])
+                for artifact_name in (step.get("outputs") or {}):
+                    all_artifact_names.add(artifact_name)
             for step in data.get("steps", []):
                 step_agent = step["agent"]
                 step_id = step.get("id") or step_agent
@@ -70,8 +80,14 @@ def load_workflow(name: str, workflows_dir: Path = _HERE / "workflows") -> Workf
                 loop_on = step.get("loop_on") or None
                 loop_to = step.get("loop_to") or None
                 max_loops = step.get("max_loops")
-                raw_inputs = step.get("inputs")
-                inputs: list[str] | None = list(raw_inputs) if raw_inputs else None
+                if "inputs" not in step:
+                    raise ValueError(
+                        f"Step '{step_id}' must declare 'inputs' explicitly. "
+                        f"Use 'inputs: [__input__]' for the workflow prompt, "
+                        f"'inputs: [<step_id>]' to consume a prior step, or 'inputs: []' for no input."
+                    )
+                raw_inputs = step["inputs"]
+                inputs: list[str] = list(raw_inputs) if raw_inputs is not None else []
                 raw_outputs = step.get("outputs")
                 outputs: dict[str, str] | None = dict(raw_outputs) if raw_outputs else None
                 when: str | None = step.get("when") or None
@@ -83,10 +99,9 @@ def load_workflow(name: str, workflows_dir: Path = _HERE / "workflows") -> Workf
                     max_loops = 3
                 if loop_on is not None and when is not None:
                     raise ValueError(f"Step '{step_id}' cannot have both loop_on and when.")
-                if inputs is not None:
-                    for ref in inputs:
-                        if ref != "__input__" and ref not in seen_ids and ref not in seen_artifact_names:
-                            raise ValueError(f"Step '{step_id}' inputs references unknown id '{ref}'.")
+                for ref in inputs:
+                    if ref not in all_ids and ref not in all_artifact_names:
+                        raise ValueError(f"Step '{step_id}' inputs references unknown id '{ref}'.")
                 if outputs is not None:
                     for artifact_name in outputs:
                         if artifact_name in seen_artifact_names or artifact_name in seen_ids:
@@ -140,6 +155,14 @@ def load_workflow(name: str, workflows_dir: Path = _HERE / "workflows") -> Workf
     raise ValueError(f"No workflow named '{name}' found in {workflows_dir}/")
 
 
+def _append_environment(prompt: str) -> str:
+    """Append current working directory and date to a system prompt."""
+    cwd = os.getcwd()
+    today = datetime.date.today().isoformat()
+    suffix = f"\n\n## Environment\n- Working directory: {cwd}\n- Current date: {today}"
+    return (prompt or "") + suffix
+
+
 def load_agent(name: str, agents_dir: Path = _HERE / "agents") -> AgentConfig:
     """Scan agents_dir for a YAML whose name: field matches name.
 
@@ -159,6 +182,7 @@ def load_agent(name: str, agents_dir: Path = _HERE / "agents") -> AgentConfig:
             raw_skills = data.get("skills", [])
             skill_names = [s["name"] if isinstance(s, dict) else s for s in raw_skills]
             prompt = append_skills(data.get("prompt", ""), skill_names)
+            prompt = _append_environment(prompt)
             raw_mcp = data.get("mcp", [])
             mcp_names = [m["name"] if isinstance(m, dict) else m for m in raw_mcp]
             for mcp_name in mcp_names:
@@ -175,6 +199,21 @@ def load_agent(name: str, agents_dir: Path = _HERE / "agents") -> AgentConfig:
                 "output": output,
             }
     raise ValueError(f"No agent named '{name}' found in {agents_dir}/")
+
+
+def substitute_prompt_vars(text: str, step_outputs: dict[str, str]) -> str:
+    """Replace {name} placeholders in a step prompt.
+
+    {step_id} expands to that step's output; {__input__} expands to the workflow's
+    initial command. Unknown names are left unchanged so literal braces aren't
+    consumed by accident.
+    """
+    def repl(m: re.Match) -> str:
+        name = m.group(1).strip()
+        if name in step_outputs:
+            return step_outputs[name]
+        return m.group(0)
+    return re.sub(r"\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}", repl, text)
 
 
 def parse_artifacts(raw_output: str, declared_outputs: dict[str, str]) -> dict[str, str]:
@@ -235,7 +274,6 @@ def run_pipeline(steps: list[StepConfig], command: str, traces_dir: str | Path =
     loop_counts: dict[str, int] = {}
     # Outputs keyed by step id; "__input__" holds the original command.
     step_outputs: dict[str, str] = {"__input__": command}
-    last_output: str = command
     step_index = 0
     total_input_tokens = 0
     total_output_tokens = 0
@@ -251,7 +289,9 @@ def run_pipeline(steps: list[StepConfig], command: str, traces_dir: str | Path =
             step_agent = step["agent"]
             step_id = step.get("id") or step_agent
             step_prompt = step.get("prompt")
-            input_ids = step.get("inputs")
+            if step_prompt:
+                step_prompt = substitute_prompt_vars(step_prompt, step_outputs)
+            input_ids = step.get("inputs") or []
             step_label = f"{step_index}:{step_id}"
 
             # Evaluate when condition — skip step if false.
@@ -267,14 +307,14 @@ def run_pipeline(steps: list[StepConfig], command: str, traces_dir: str | Path =
                         continue
 
             # Determine what to feed this step.
-            if input_ids is not None:
+            if len(input_ids) == 1 and input_ids[0] in step_outputs:
+                current_input = step_outputs[input_ids[0]]
+            else:
                 parts = []
                 for ref in input_ids:
                     if ref in step_outputs:
                         parts.append(f"## Input: {ref}\n{step_outputs[ref]}")
                 current_input = "\n\n".join(parts)
-            else:
-                current_input = last_output
 
             try:
                 if step_id not in agent_cache:
@@ -296,7 +336,8 @@ def run_pipeline(steps: list[StepConfig], command: str, traces_dir: str | Path =
                 print("\033[36m--- response ---\033[0m")
 
                 trace.log(step=step_label, event="step_start", model=model,
-                          tools=agent["tool_names"], prompt_preview=_preview(effective_input))
+                          tools=agent["tool_names"], prompt_preview=_preview(effective_input),
+                          system_prompt=agent["prompt"], user_prompt=effective_input)
                 step_start_time = time.time()
 
                 # Merge agent's canonical output schema with step-level override.
@@ -347,7 +388,6 @@ def run_pipeline(steps: list[StepConfig], command: str, traces_dir: str | Path =
                     trace.save_snapshot(step_index, step_id, messages, traces_dir=traces_dir)
                     step_index += 1
                     continue
-                last_output = step_output
                 step_outputs[step_id] = step_output
                 declared_outputs = step.get("outputs")
                 if declared_outputs:
@@ -604,13 +644,11 @@ def dry_run_pipeline(workflow_name: str, steps: list[StepConfig]) -> None:
         else:
             print(f"       mcp: none")
 
-        inputs = step.get("inputs")
+        inputs = step.get("inputs") or []
         if inputs:
             print(f"       inputs: {', '.join(inputs)}")
-        elif i == 0:
-            print(f"       inputs: __input__")
         else:
-            print(f"       inputs: previous step output")
+            print(f"       inputs: (none)")
 
         outputs = step.get("outputs")
         if outputs:

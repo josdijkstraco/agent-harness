@@ -108,7 +108,7 @@ mcp: [linear]
 
 ## Workflows
 
-Workflows are defined in the `workflows/` directory as YAML files. A workflow is an ordered list of agent steps. By default the output of each step becomes the input of the next; explicit `inputs:` and structured `output:` schemas let you build richer graphs.
+Workflows are defined in the `workflows/` directory as YAML files. A workflow is an ordered list of agent steps. Every step declares its `inputs:` explicitly — pick any combination of the workflow's initial command (`__input__`), earlier step ids, and named artifacts.
 
 ### Workflow YAML Schema
 
@@ -118,11 +118,14 @@ description: "Optional"  # Human-readable description
 steps:
   - agent: planner        # Agent name (must exist in agents/)
     id: planner           # Optional: tag this step's output for later reference
+    inputs: [__input__]   # Required: workflow prompt, prior step ids, artifact names, or []
     prompt: |             # Optional: step-specific prompt prepended to input
       Plan the fix...
   - agent: implementer
     id: implementer
+    inputs: [planner]
   - agent: reviewer
+    inputs: [implementer]
     output:               # Optional: step-level output schema (merged with agent's)
       decision: {type: string, enum: [APPROVED, REJECTED]}
       feedback: {type: string}
@@ -141,7 +144,7 @@ steps:
 | `agent` | string | Name of the agent to run (required) |
 | `id` | string | Tag this step's output; defaults to `agent`. Required when an agent appears more than once |
 | `prompt` | string | Step-specific prompt prepended to the input |
-| `inputs` | list | Step ids / artifact names / `__input__` to use as input. Default: previous step's output |
+| `inputs` | list | **Required.** Step ids / artifact names / `__input__` to feed as input. Use `[]` for no input |
 | `output` | dict | Structured result schema, merged with the agent's canonical `output`. Triggers the `submit_result` tool |
 | `outputs` | dict | Named artifacts extracted from fenced code blocks in the step's text output |
 | `loop_on` | string | Keyword (substring) OR `field == value` when `output` is declared |
@@ -156,7 +159,7 @@ steps:
 python harness.py workflow <workflow-name> "<task description>"
 ```
 
-The `<task description>` is sent to the first agent. Each subsequent step receives either the previous step's output or whatever `inputs:` selects.
+The `<task description>` becomes `__input__`. Each step receives whatever its `inputs:` list selects.
 
 ### Dry Run
 
@@ -181,39 +184,60 @@ This loads the workflow and each agent's config, validates that all tools, skill
        model: qwen/qwen3.6-plus
        tools: read_file, write_file, bash, find_files
        mcp: none
-       inputs: previous step output
+       inputs: planner
 
     3. reviewer  (reviewer)
        model: z-ai/glm-5.1
        tools: read_file, bash, find_files
        mcp: none
-       inputs: previous step output
+       inputs: implementer
 ```
 
 ### Step IDs and Explicit Inputs
 
-By default each step receives the previous step's output. For more complex workflows, tag steps with `id` and reference them with `inputs`:
+Every step must declare `inputs:` explicitly. Tag steps with `id` so later steps can reference them:
 
 ```yaml
 steps:
   - agent: linear
-    id: card               # Tag this step's output as "card"
+    id: card                        # Tag this step's output as "card"
+    inputs: [__input__]             # Workflow's initial command
   - agent: planner
+    inputs: [card]
   - agent: implementer
     id: implementer
+    inputs: [planner, reviewer]     # Loop-back inputs can forward-reference
   - agent: reviewer
+    inputs: [implementer]
     loop_on: decision == REJECTED
     loop_to: implementer
     output:
       decision: {type: string, enum: [APPROVED, REJECTED]}
       feedback: {type: string}
   - agent: github
-    inputs: [implementer]  # Use implementer's output, not reviewer's
+    inputs: [implementer]           # Use implementer's output, not reviewer's
   - agent: linear
-    inputs: [card]         # Use the original card output
+    inputs: [card]                  # Use the original card output
 ```
 
-The special input `__input__` refers to the original prompt passed on the command line. Multiple inputs are concatenated under `## Input: <id>` headers.
+**Valid input references:**
+- `__input__` — the original prompt passed on the command line
+- A step `id` — that step's final text/structured output
+- An artifact name declared via `outputs:` on an earlier step
+- `[]` — no input (useful when a step's `prompt:` is fully self-contained)
+
+When a step has exactly one input, the raw content is passed through. With multiple inputs, each is labeled `## Input: <id>` and concatenated.
+
+Inputs can forward-reference any step id in the workflow — this is how loop-back steps consume the next iteration's upstream outputs (e.g., `implementer` taking `[planner, reviewer]`). Unknown ids are caught at load time.
+
+**Inline interpolation inside a `prompt:`** — reference any step id or `__input__` with `{name}`:
+
+```yaml
+- agent: judge
+  inputs: [planner_1, planner_2]
+  prompt: |
+    Compare the two plans against the original requirements: "{__input__}".
+```
 
 ### Loop-Back Steps
 
@@ -221,6 +245,7 @@ A step can loop back to an earlier step based on its output. Useful for implemen
 
 ```yaml
 - agent: reviewer
+  inputs: [implementer]
   output:
     decision: {type: string, enum: [APPROVED, REJECTED]}
     feedback: {type: string}
@@ -233,6 +258,7 @@ Or, without a structured schema, fall back to substring matching:
 
 ```yaml
 - agent: reviewer
+  inputs: [implementer]
   loop_on: UNAPPROVED             # substring match in the step's text output
   loop_to: implementer
 ```
@@ -252,6 +278,7 @@ Use `stop_on` with a structured `output` schema to halt the pipeline when a cond
 ```yaml
 - agent: linear
   id: card
+  inputs: [__input__]
   output:
     status: {type: string, enum: [FOUND, STOP]}
     context: {type: string}
@@ -264,6 +291,7 @@ Use `when:` to skip a step when a pattern isn't present in an earlier step's out
 
 ```yaml
 - agent: github
+  inputs: [card]
   when: FOUND in card     # only run if "FOUND" appears in the card step's output
 ```
 
@@ -273,6 +301,7 @@ A step can declare named artifacts that the harness will extract from fenced cod
 
 ```yaml
 - agent: planner
+  inputs: [__input__]
   outputs:
     plan: {type: string}
 ```
@@ -301,8 +330,11 @@ the harness extracts the block into the `plan` artifact, which later steps can r
 name: example
 steps:
   - agent: planner
+    inputs: [__input__]
   - agent: implementer
+    inputs: [planner]
   - agent: reviewer
+    inputs: [implementer]
 ```
 
 ```bash
@@ -316,6 +348,7 @@ python harness.py workflow example "Add a /healthz endpoint to the FastAPI app"
 name: brainstorm
 steps:
   - agent: brainstormer
+    inputs: [__input__]
 ```
 
 ```bash
@@ -330,6 +363,7 @@ name: pick-and-fix
 steps:
   - agent: linear
     id: card
+    inputs: [__input__]
     prompt: |
       Pick a card from the 'Agent Harness' project that is in the 'todo' column
       and move it to 'in progress'. Your final response must include the card's
@@ -340,12 +374,15 @@ steps:
     stop_on: status == STOP
 
   - agent: planner
+    inputs: [card]
     prompt: Plan the fix for the request.
 
   - agent: implementer
     id: implementer
+    inputs: [planner, reviewer]   # reviewer is empty on first pass; populated on loop-back
 
   - agent: reviewer
+    inputs: [implementer]
     output:
       decision: {type: string, enum: [APPROVED, REJECTED]}
       feedback: {type: string}
@@ -374,6 +411,7 @@ python harness.py workflow pick-and-fix "Fix the next bug"
 name: linear
 steps:
   - agent: linear
+    inputs: [__input__]
 ```
 
 ```bash
