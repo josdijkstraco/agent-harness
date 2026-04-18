@@ -3,11 +3,14 @@ description: "Optional"  # Human-readable description
 steps:
   - agent: planner        # Agent name (must exist in agents/)
     id: planner           # Optional: tag this step's output for later reference
+    inputs: [__input__]   # Required: [__input__] for workflow prompt, [step_id] for prior output, [] for none
     prompt: |             # Optional: step-specific prompt prepended to input
       Plan the fix...
   - agent: implementer
     id: implementer
+    inputs: [planner]
   - agent: reviewer
+    inputs: [implementer]
     output:               # Optional: step-level output schema (merged with agent's)
       decision: {type: string, enum: [APPROVED, REJECTED]}
       feedback: {type: string}

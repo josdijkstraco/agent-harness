@@ -1,0 +1,21 @@
+name: multi-planner
+description: Run two planners on the same input prompt to get independent plans.
+steps:
+  - agent: planner_no_ask
+    id: planner_1
+    inputs: [__input__]
+
+  - agent: planner_no_ask
+    id: planner_2
+    inputs: [__input__]
+
+  - agent: judge
+    inputs: [planner_1, planner_2]
+    prompt: |
+      You will be given two plans and you must figure out the differences between the two plans.
+      Enumarate the differences between the two plans and figure out if this is due to missing or inconsistent requirements.
+      Maybe requirements were interpreted differently or are unbiguous.
+      Ask the user questions to clarify the requirements.
+      Then rewrite the original requirements: "{__input__}".
+      Make sure to include all the requirements from the original prompt.
+    tools: [ask_user]

@@ -1,12 +1,15 @@
 """Structured trace logging for workflow pipeline runs."""
 
 import json
+import os
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
 PREVIEW_MAX = 500
+PARAMS_MAX = 50
 
 
 def _preview(text: str) -> str:
@@ -14,6 +17,24 @@ def _preview(text: str) -> str:
     if len(text) <= PREVIEW_MAX:
         return text
     return text[:PREVIEW_MAX] + "..."
+
+
+def _truncate_params(params: dict) -> str:
+    """Render a params dict as key=value pairs, capped at PARAMS_MAX chars."""
+    s = ", ".join(f"{k}={v!r}" for k, v in params.items())
+    if len(s) <= PARAMS_MAX:
+        return s
+    return s[: PARAMS_MAX - 1] + "…"
+
+
+def _color_enabled() -> bool:
+    return sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+
+
+def _c(text: str, code: str) -> str:
+    if not _color_enabled():
+        return text
+    return f"\033[{code}m{text}\033[0m"
 
 
 @dataclass(frozen=True)
@@ -122,34 +143,51 @@ class Trace:
 
     def format_detail(self) -> str:
         """Format trace as human-readable step-by-step detail."""
-        lines = [f"Trace {self.id} — {self.workflow} ({self.status})", f'Command: "{self.command}"', ""]
+        header = _c(f"Trace {self.id} — {self.workflow} ({self.status})", "1")
+        lines = [header, f'Command: "{self.command}"', ""]
+
+        def ts(e: TraceEvent) -> str:
+            return _c(f"[+{e.timestamp - self.started_at:5.1f}s]", "2")
+
+        arrow_call = _c("->", "32")
+        arrow_result = _c("<-", "34")
+
         for e in self.events:
             if e.event == "step_start":
                 model = e.data.get("model", "?")
-                lines.append(f"Step {e.step} (model: {model})")
+                lines.append(f"{ts(e)} {_c(f'Step {e.step}', '1;36')}  (model: {model})")
+                system_prompt = e.data.get("system_prompt")
+                user_prompt = e.data.get("user_prompt")
+                if system_prompt:
+                    lines.append(f"{ts(e)}   {_c('--- system prompt ---', '36')}")
+                    lines.append(_c(system_prompt, "2"))
+                if user_prompt:
+                    lines.append(f"{ts(e)}   {_c('--- user prompt ---', '36')}")
+                    lines.append(_c(user_prompt, "2"))
             elif e.event == "tool_call":
                 tool = e.data.get("tool", "?")
                 params = e.data.get("params", {})
-                lines.append(f"  -> tool: {tool}({params})")
+                lines.append(f"{ts(e)}   {arrow_call} {tool}({_truncate_params(params)})")
             elif e.event == "tool_result":
                 tool = e.data.get("tool", "?")
                 preview = e.data.get("result_preview", "")
                 error = e.data.get("error")
                 if error:
-                    lines.append(f"  <- {tool}: ERROR: {error}")
+                    lines.append(f"{ts(e)}   {arrow_result} {tool}: {_c(f'ERROR: {error}', '31')}")
                 else:
-                    lines.append(f"  <- {tool}: {preview[:100]}")
+                    lines.append(f"{ts(e)}   {arrow_result} {tool}: {preview[:100]}")
             elif e.event == "step_end":
                 preview = e.data.get("output_preview", "")
                 duration = e.data.get("duration", 0)
                 cost = e.data.get("cost", 0)
-                lines.append(f'  -> output: "{preview[:200]}"')
-                lines.append(f"  ({duration:.1f}s, ${cost:.4f})")
+                lines.append(f'{ts(e)}   {arrow_call} output: "{preview[:200]}"')
+                lines.append(f"{ts(e)}   ({duration:.1f}s, ${cost:.4f})")
                 lines.append("")
             elif e.event == "pipeline_end":
                 total_cost = e.data.get("total_cost", 0)
                 duration = e.data.get("duration", 0)
                 total_in = e.data.get("total_input", 0)
                 total_out = e.data.get("total_output", 0)
-                lines.append(f"Total: {duration:.1f}s, ${total_cost:.4f}, {total_in:,} in / {total_out:,} out")
+                total = f"Total: {duration:.1f}s, ${total_cost:.4f}, {total_in:,} in / {total_out:,} out"
+                lines.append(f"{ts(e)} {_c(total, '1')}")
         return "\n".join(lines)

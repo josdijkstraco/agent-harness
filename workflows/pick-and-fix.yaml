@@ -2,6 +2,7 @@ name: pick-and-fix
 steps:
   - agent: linear
     id: card
+    inputs: [__input__]
     prompt: |
       Pick a card from the 'Agent Harness' project that is in the 'todo' column
       and move it to the 'in progress' column. Your final response needs to include
@@ -12,13 +13,16 @@ steps:
     stop_on: status == STOP
 
   - agent: planner
+    inputs: [card]
     prompt: |
       Plan the fix for the request.
 
   - agent: implementer
     id: implementer
+    inputs: [planner, reviewer]
 
   - agent: reviewer
+    inputs: [implementer]
     output:
       decision: {type: string, enum: [APPROVED, REJECTED]}
       feedback: {type: string}
