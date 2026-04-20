@@ -1,0 +1,18 @@
+name: requirements
+prompt: |
+  Review the following software requirements for issues. Check specifically for:
+
+  1. **Granularity**: Is each requirement independently testable, or do any try to do too much?
+  2. **Completeness**: Are there missing edge cases, undefined behaviors, or implicit assumptions that should be made explicit? Pay attention to:
+    - Input validation gaps
+    - Interactions between requirements (does the output of one feed into another without clear ordering?)
+    - Boundary conditions (empty inputs, zero, negatives, type mismatches)
+    - Side effects and mutation
+  3. **Overlap and contradiction**: Do any requirements conflict or redundantly cover the same behavior?
+  4. **Cross-reference gaps**: When one requirement relaxes or modifies another, does it explicitly re-state the constraints that still apply, or does it silently inherit them?
+
+  For each issue found, state which requirement(s) are affected, what the problem is, and suggest a specific fix.
+
+  Finally, return all requirements with fixes applied, numbered sequentially.
+model: qwen/qwen3.6-plus
+tools: [read_file, bash, find_files]
