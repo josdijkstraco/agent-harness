@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Callable
 
 
-ROOT_DIR = Path("/Users/jos/projects/agent-harness")
+ROOT_DIR = Path(__file__).resolve().parent
 
 
 def _validate_path(path: str) -> str | None:

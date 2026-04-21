@@ -17,6 +17,7 @@ API_URL = "https://openrouter.ai/api/v1/chat/completions"
 MODEL = "qwen/qwen3.6-plus"
 AVAILABLE_MODELS = [
     "qwen/qwen3.6-plus",
+    "moonshotai/kimi-k2.6",
     "z-ai/glm-5.1",
     "z-ai/glm-4.5-air:free",
     "z-ai/glm-5v-turbo",
